@@ -58,7 +58,7 @@
       onclick: continueGame, aria: 'Nessun salvataggio', title: 'Nessun salvataggio trovato' }
   ]
 
-  let hitboxes = $state<Hitbox[]>(structuredClone(DEFAULT_HITBOXES))
+  let hitboxes = $state<Hitbox[]>(DEFAULT_HITBOXES.map(h => ({ ...h })))
 
   const LS_KEY = 'fm.hitbox-editor.v1'
 
@@ -90,7 +90,7 @@
 
   function resetHitboxes() {
     if (!confirm('Ripristinare le coordinate originali? Perderai le modifiche locali.')) return
-    hitboxes = structuredClone(DEFAULT_HITBOXES)
+    hitboxes = DEFAULT_HITBOXES.map(h => ({ ...h }))
     saveToLocal()
   }
 
