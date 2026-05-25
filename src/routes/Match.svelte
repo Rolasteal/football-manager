@@ -98,10 +98,10 @@
     goal: 4200,
     yellow: 2200,
     red: 3000,
-    half_time: 3800,
-    full_time: 4500,
-    kickoff: 3000,
-    second_half: 3000,
+    half_time: 5000,
+    full_time: 5500,
+    kickoff: 5000,
+    second_half: 5000,
     penalty: 2600,
     mvp: 6500,
   }
@@ -152,10 +152,10 @@
   }
 
   /**
-   * Voti LIVE 4.0-10.0 calcolati sugli eventi già mostrati.
-   * Replica (semplificata) dell'algoritmo dell'engine:
-   *  goal +1.0, assist +0.5, save +0.3, shot_on +0.1,
-   *  shot off -0.05, foul -0.05, yellow -0.5, red -1.5.
+   * Voto BASE prestazione 4.0-10.0 calcolato sugli eventi mostrati.
+   * NON include gol/assist/cartellini/rigori — quelli sono fanta-bonus
+   * separati (vedi computeFantaBonus) e vengono sommati per il voto
+   * finale mostrato. Qui solo metriche di "pagella" tipo FM.
    */
   function computeLiveRatings(events: MatchEvent[]): Record<EntityId, number> {
     const r: Record<EntityId, number> = {}
@@ -171,16 +171,10 @@
       touch(ev.playerId)
       touch(ev.secondaryPlayerId)
       switch (ev.kind) {
-        case 'goal':
-          adj(ev.playerId, +1.0)
-          if (ev.secondaryPlayerId) adj(ev.secondaryPlayerId, +0.5)
-          break
         case 'shot_on_target': adj(ev.playerId, +0.1); break
         case 'save':           adj(ev.playerId, +0.3); break
         case 'shot':           adj(ev.playerId, -0.05); break
         case 'foul':           adj(ev.playerId, -0.05); break
-        case 'yellow_card':    adj(ev.playerId, -0.5); break
-        case 'red_card':       adj(ev.playerId, -1.5); break
       }
     }
     return r
@@ -223,6 +217,7 @@
       const ev = events[i]
       if (ev.kind === 'goal') {
         adj(ev.playerId, +3)
+        if (ev.secondaryPlayerId) adj(ev.secondaryPlayerId, +1)  // assist
         // -1 al portiere avversario per gol subito
         adj(ev.side === 'home' ? awayGkId : homeGkId, -1)
       } else if (ev.kind === 'yellow_card') {
@@ -326,10 +321,14 @@
       '/assets/match/Fine_partita.png',
       '/assets/match/Mvp.png',
     ]
-    for (const src of PRELOAD) {
+    // Preload BLOCCANTE: aspetta che le PNG siano in cache prima di mostrare
+    // l'overlay kickoff (altrimenti il primo overlay è nero senza immagine).
+    await Promise.all(PRELOAD.map(src => new Promise<void>((resolve) => {
       const img = new Image()
+      img.onload = () => resolve()
+      img.onerror = () => resolve()  // file mancante → continua comunque
       img.src = src
-    }
+    })))
     try {
       // Avanza la giornata (simula tutte le partite, trova la mia)
       const adv = advanceMatchday(career)
@@ -702,7 +701,7 @@
                       {lastNameOf(pid)}
                       {#if bonusOf(pid) !== 0}<span class="bonus-chip" class:b-plus={bonusOf(pid) > 0}>{fmtBonus(bonusOf(pid))}</span>{/if}
                     </span>
-                    <span class="rate {ratingClass(rating(pid))}">{fmtRating(rating(pid))}</span>
+                    <span class="rate {ratingClass(totalOf(pid))}">{fmtRating(totalOf(pid))}</span>
                   </li>
                 {/each}
                 {#if homeLineup.bench.length}
@@ -711,7 +710,7 @@
                     <li class="lp-row sub">
                       <span class="shirt">{shirtOf(pid)}</span>
                       <span class="pname">{lastNameOf(pid)}</span>
-                      <span class="rate {ratingClass(rating(pid))}">{fmtRating(rating(pid))}</span>
+                      <span class="rate {ratingClass(totalOf(pid))}">{fmtRating(totalOf(pid))}</span>
                     </li>
                   {/each}
                 {/if}
@@ -727,7 +726,7 @@
               <ul class="lp-list">
                 {#each awayLineup.starters as pid (pid)}
                   <li class="lp-row">
-                    <span class="rate {ratingClass(rating(pid))}">{fmtRating(rating(pid))}</span>
+                    <span class="rate {ratingClass(totalOf(pid))}">{fmtRating(totalOf(pid))}</span>
                     <span class="pname">
                       {lastNameOf(pid)}
                       {#if bonusOf(pid) !== 0}<span class="bonus-chip" class:b-plus={bonusOf(pid) > 0}>{fmtBonus(bonusOf(pid))}</span>{/if}
@@ -739,7 +738,7 @@
                   <li class="lp-sep">A disposizione</li>
                   {#each awayLineup.bench as pid (pid)}
                     <li class="lp-row sub">
-                      <span class="rate {ratingClass(rating(pid))}">{fmtRating(rating(pid))}</span>
+                      <span class="rate {ratingClass(totalOf(pid))}">{fmtRating(totalOf(pid))}</span>
                       <span class="pname">{lastNameOf(pid)}</span>
                       <span class="shirt">{shirtOf(pid)}</span>
                     </li>
