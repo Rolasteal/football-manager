@@ -43,18 +43,19 @@
   }
 
   // ====== Hitbox definitions (valori di default) ======
+  // Coordinate calibrate da Roberto via Coordinate Box (2026-05-25)
   const DEFAULT_HITBOXES: Hitbox[] = [
-    { id: 'gift', tag: '1·GIFT', kind: 'round', cx: 86, cy: 5.4, size: 4.2,
+    { id: 'gift', tag: '1·GIFT', kind: 'round', cx: 86.2, cy: 5.2, size: 4.2,
       aria: 'Novità e regali', title: 'Novità (presto disponibile)' },
-    { id: 'cloud', tag: '2·CLOUD', kind: 'round', cx: 91, cy: 5.4, size: 4.2,
+    { id: 'cloud', tag: '2·CLOUD', kind: 'round', cx: 91.4, cy: 5.1, size: 4.2,
       aria: 'Sincronizzazione cloud', title: 'Cloud sync (presto disponibile)' },
-    { id: 'settings', tag: '3·SETTINGS', kind: 'round', cx: 96, cy: 5.4, size: 4.2,
+    { id: 'settings', tag: '3·SETTINGS', kind: 'round', cx: 96.2, cy: 5.3, size: 4.2,
       onclick: openSettings, aria: 'Impostazioni', title: 'Impostazioni' },
-    { id: 'modifica', tag: '4·MODIFICA CLUB', kind: 'rect', x: 86.5, y: 15.3, w: 11, h: 4.2,
+    { id: 'modifica', tag: '4·MODIFICA CLUB', kind: 'rect', x: 88.5, y: 15.3, w: 9.0, h: 3.3,
       disabled: true, aria: 'Modifica club (dopo aver creato una carriera)', title: 'Disponibile dopo aver creato una carriera' },
-    { id: 'nuova', tag: '5·NUOVA CARRIERA', kind: 'rect', x: 23, y: 60.5, w: 21.5, h: 8.5,
+    { id: 'nuova', tag: '5·NUOVA CARRIERA', kind: 'rect', x: 23.6, y: 58.7, w: 18.8, h: 5.7,
       onclick: startNew, aria: 'Nuova Carriera', title: 'Inizia una nuova carriera' },
-    { id: 'nessun', tag: '6·NESSUN SALV.', kind: 'rect', x: 45, y: 60.5, w: 21.5, h: 8.5,
+    { id: 'nessun', tag: '6·NESSUN SALV.', kind: 'rect', x: 44.2, y: 58.5, w: 18.6, h: 5.8,
       onclick: continueGame, aria: 'Nessun salvataggio', title: 'Nessun salvataggio trovato' }
   ]
 
@@ -239,7 +240,7 @@
     try { hasSave = await hasAnySave() } catch { hasSave = false }
     const url = window.location.href
     if (url.includes('debug')) debug = true
-    if (url.includes('edit'))  { editor = true; debug = true }
+    if (url.includes('edit') || url.includes('coordbox')) { editor = true; debug = true }
     loadFromLocal()
     window.addEventListener('keydown', onKeydown)
   })
@@ -310,7 +311,7 @@
 
     {#if debug && !editor}
       <div class="debug-banner">
-        🐞 DEBUG MODE — premi <kbd>D</kbd> per uscire · <kbd>E</kbd> per editor
+        🐞 DEBUG MODE — <kbd>D</kbd> per uscire · <kbd>E</kbd> per Coordinate Box
       </div>
     {/if}
 
@@ -318,11 +319,11 @@
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <div class="editor-panel" onpointerdown={(e) => e.stopPropagation()}>
         <div class="editor-head">
-          <strong>🎯 Editor hitbox</strong>
-          <span class="hint">Trascina le hitbox · maniglie agli angoli per ridimensionare · frecce per nudge ±0.1% (+Shift ±0.5%)</span>
+          <strong>📐 Coordinate Box</strong>
+          <span class="hint">Trascina le hitbox · maniglie agli angoli per ridimensionare · frecce ±0.1% (+Shift ±0.5%)</span>
           <button class="ed-btn primary" onclick={copyConfig}>📋 Copia coordinate</button>
           <button class="ed-btn" onclick={resetHitboxes}>↺ Reset</button>
-          <button class="ed-btn ghost" onclick={() => { editor = false }}>✕ Esci editor</button>
+          <button class="ed-btn ghost" onclick={() => { editor = false }}>✕ Chiudi</button>
         </div>
         {#if copyFeedback}
           <div class="copy-feedback">{copyFeedback}</div>
