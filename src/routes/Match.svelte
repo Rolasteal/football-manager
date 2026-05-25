@@ -3,7 +3,7 @@
   import { onMount, onDestroy, tick } from 'svelte'
   import { careerStore, persistActiveCareer } from '$state/career.svelte'
   import { advanceMatchday, autoLineup, FORMATIONS } from '$engine/career/career'
-  import type { Fixture, MatchResult } from '$engine/competition/types'
+  import type { Fixture, MatchResult, TeamMatchStats } from '$engine/competition/types'
   import type { MatchEvent } from '$engine/match/types'
   import type { Lineup } from '$engine/tactics/types'
   import type { EntityId, Player } from '$engine/types'
@@ -257,6 +257,36 @@
 
   let fantaBonus = $derived(computeFantaBonus(shown))
 
+  // ====== STATISTICHE LIVE (da shown[], non da result.stats che è il totale finale) ======
+  function emptyTeamStats(): TeamMatchStats {
+    return { possession: 50, shots: 0, shotsOnTarget: 0, corners: 0, fouls: 0, yellowCards: 0, redCards: 0, passes: 0, passAccuracy: 0 }
+  }
+  function computeLiveStats(events: MatchEvent[]): { home: TeamMatchStats; away: TeamMatchStats } {
+    const home = emptyTeamStats()
+    const away = emptyTeamStats()
+    for (const ev of events) {
+      const t = ev.side === 'home' ? home : ev.side === 'away' ? away : null
+      if (!t) continue
+      switch (ev.kind) {
+        case 'shot':           t.shots++; break
+        case 'shot_on_target': t.shots++; t.shotsOnTarget++; break
+        case 'goal':           t.shots++; t.shotsOnTarget++; break
+        case 'corner':         t.corners++; break
+        case 'foul':           t.fouls++; break
+        case 'yellow_card':    t.yellowCards++; break
+        case 'red_card':       t.redCards++; break
+      }
+    }
+    // Possesso: dato "di partita" — uso quello dell'engine come stima media
+    // (non è derivabile da eventi discreti senza simulare il tempo di palla)
+    if (result?.stats) {
+      home.possession = result.stats.home.possession
+      away.possession = result.stats.away.possession
+    }
+    return { home, away }
+  }
+  let liveStats = $derived(computeLiveStats(shown))
+
   function bonusOf(id: EntityId): number {
     return fantaBonus[id] ?? 0
   }
@@ -327,8 +357,14 @@
       }
       // Persistenza fuori dal critical path
       persistActiveCareer()
-      // Avvia replay
-      tickReplay()
+      // Slide INIZIO PARTITA immediata: consumo il primo evento (kickoff a min 0)
+      // senza aspettare i 5s del primo tick così l'overlay appare subito.
+      const firstEv = result.events[0]
+      if (firstEv && firstEv.kind === 'kickoff' && firstEv.minute === 0) {
+        consumeEvent(firstEv)
+      } else {
+        tickReplay()
+      }
     } catch (e) {
       errorMsg = e instanceof Error ? e.message : String(e)
     }
@@ -644,118 +680,131 @@
       </div>
     {/if}
 
-    {#if homeLineup && awayLineup}
-      <section class="lineups card-gold">
-        <div class="lineups-head">
-          <h3 class="lp-title">Formazioni</h3>
-        </div>
-        <div class="lineups-grid">
-          <!-- HOME -->
-          <div class="team-col">
-            <div class="team-head" style="--c1: {colors(myFixture.homeId).c1}; --c2: {colors(myFixture.homeId).c2};">
-              <span class="crest-sm">{teamShort(myFixture.homeId)}</span>
-              <span class="th-name">{teamName(myFixture.homeId)}</span>
-              <span class="th-form">{homeLineup.formation}</span>
-            </div>
-            <ul class="lp-list">
-              {#each homeLineup.starters as pid (pid)}
-                <li class="lp-row">
-                  <span class="shirt">{shirtOf(pid)}</span>
-                  <span class="pname">
-                    {lastNameOf(pid)}
-                    {#if bonusOf(pid) !== 0}<span class="bonus-chip" class:b-plus={bonusOf(pid) > 0}>{fmtBonus(bonusOf(pid))}</span>{/if}
-                  </span>
-                  <span class="rate {ratingClass(rating(pid))}">{fmtRating(rating(pid))}</span>
-                </li>
-              {/each}
-              {#if homeLineup.bench.length}
-                <li class="lp-sep">A disposizione</li>
-                {#each homeLineup.bench as pid (pid)}
-                  <li class="lp-row sub">
+    <main class="match-body">
+      {#if homeLineup && awayLineup}
+        <section class="formations-pane card-gold">
+          <div class="lineups-head">
+            <h3 class="lp-title">Formazioni</h3>
+          </div>
+          <div class="lineups-grid">
+            <!-- HOME -->
+            <div class="team-col">
+              <div class="team-head" style="--c1: {colors(myFixture.homeId).c1}; --c2: {colors(myFixture.homeId).c2};">
+                <span class="crest-sm">{teamShort(myFixture.homeId)}</span>
+                <span class="th-name">{teamName(myFixture.homeId)}</span>
+                <span class="th-form">{homeLineup.formation}</span>
+              </div>
+              <ul class="lp-list">
+                {#each homeLineup.starters as pid (pid)}
+                  <li class="lp-row">
                     <span class="shirt">{shirtOf(pid)}</span>
-                    <span class="pname">{lastNameOf(pid)}</span>
+                    <span class="pname">
+                      {lastNameOf(pid)}
+                      {#if bonusOf(pid) !== 0}<span class="bonus-chip" class:b-plus={bonusOf(pid) > 0}>{fmtBonus(bonusOf(pid))}</span>{/if}
+                    </span>
                     <span class="rate {ratingClass(rating(pid))}">{fmtRating(rating(pid))}</span>
                   </li>
                 {/each}
-              {/if}
-            </ul>
-          </div>
-          <!-- AWAY -->
-          <div class="team-col away">
-            <div class="team-head" style="--c1: {colors(myFixture.awayId).c1}; --c2: {colors(myFixture.awayId).c2};">
-              <span class="crest-sm">{teamShort(myFixture.awayId)}</span>
-              <span class="th-name">{teamName(myFixture.awayId)}</span>
-              <span class="th-form">{awayLineup.formation}</span>
+                {#if homeLineup.bench.length}
+                  <li class="lp-sep">A disposizione</li>
+                  {#each homeLineup.bench as pid (pid)}
+                    <li class="lp-row sub">
+                      <span class="shirt">{shirtOf(pid)}</span>
+                      <span class="pname">{lastNameOf(pid)}</span>
+                      <span class="rate {ratingClass(rating(pid))}">{fmtRating(rating(pid))}</span>
+                    </li>
+                  {/each}
+                {/if}
+              </ul>
             </div>
-            <ul class="lp-list">
-              {#each awayLineup.starters as pid (pid)}
-                <li class="lp-row">
-                  <span class="rate {ratingClass(rating(pid))}">{fmtRating(rating(pid))}</span>
-                  <span class="pname">{lastNameOf(pid)}</span>
-                  <span class="shirt">{shirtOf(pid)}</span>
-                </li>
-              {/each}
-              {#if awayLineup.bench.length}
-                <li class="lp-sep">A disposizione</li>
-                {#each awayLineup.bench as pid (pid)}
-                  <li class="lp-row sub">
+            <!-- AWAY -->
+            <div class="team-col away">
+              <div class="team-head" style="--c1: {colors(myFixture.awayId).c1}; --c2: {colors(myFixture.awayId).c2};">
+                <span class="crest-sm">{teamShort(myFixture.awayId)}</span>
+                <span class="th-name">{teamName(myFixture.awayId)}</span>
+                <span class="th-form">{awayLineup.formation}</span>
+              </div>
+              <ul class="lp-list">
+                {#each awayLineup.starters as pid (pid)}
+                  <li class="lp-row">
                     <span class="rate {ratingClass(rating(pid))}">{fmtRating(rating(pid))}</span>
-                    <span class="pname">{lastNameOf(pid)}</span>
+                    <span class="pname">
+                      {lastNameOf(pid)}
+                      {#if bonusOf(pid) !== 0}<span class="bonus-chip" class:b-plus={bonusOf(pid) > 0}>{fmtBonus(bonusOf(pid))}</span>{/if}
+                    </span>
                     <span class="shirt">{shirtOf(pid)}</span>
                   </li>
                 {/each}
-              {/if}
-            </ul>
+                {#if awayLineup.bench.length}
+                  <li class="lp-sep">A disposizione</li>
+                  {#each awayLineup.bench as pid (pid)}
+                    <li class="lp-row sub">
+                      <span class="rate {ratingClass(rating(pid))}">{fmtRating(rating(pid))}</span>
+                      <span class="pname">{lastNameOf(pid)}</span>
+                      <span class="shirt">{shirtOf(pid)}</span>
+                    </li>
+                  {/each}
+                {/if}
+              </ul>
+            </div>
+          </div>
+        </section>
+      {/if}
+
+      <section class="right-pane">
+        <div class="card-gold stream-card">
+          <h3 class="side-h">Cronaca</h3>
+          <div class="stream" bind:this={streamEl}>
+            {#each shown as ev, i (i)}
+              <div class="ev {eventClass(ev)}" class:home={ev.side === 'home'} class:away={ev.side === 'away'}>
+                <span class="ev-min">{ev.minute}'</span>
+                <span class="ev-text">{ev.commentary ?? ''}</span>
+              </div>
+            {/each}
           </div>
         </div>
-      </section>
-    {/if}
 
-    <main class="stream-wrap">
-      <div class="stream card-gold" bind:this={streamEl}>
-        {#each shown as ev, i (i)}
-          <div class="ev {eventClass(ev)}" class:home={ev.side === 'home'} class:away={ev.side === 'away'}>
-            <span class="ev-min">{ev.minute}'</span>
-            <span class="ev-text">{ev.commentary ?? ''}</span>
-          </div>
-        {/each}
-      </div>
-
-      <aside class="card-gold side-stats">
-        <h3 class="side-h">Statistiche</h3>
-        {#if result.stats}
+        <aside class="card-gold side-stats">
+          <h3 class="side-h">Statistiche</h3>
           <div class="stat-row">
-            <span class="sv">{result.stats.home.possession}%</span>
+            <span class="sv">{liveStats.home.possession}%</span>
             <span class="sl">Possesso</span>
-            <span class="sv">{result.stats.away.possession}%</span>
+            <span class="sv">{liveStats.away.possession}%</span>
           </div>
           <div class="stat-row">
-            <span class="sv">{result.stats.home.shots}</span>
+            <span class="sv">{liveStats.home.shots}</span>
             <span class="sl">Tiri</span>
-            <span class="sv">{result.stats.away.shots}</span>
+            <span class="sv">{liveStats.away.shots}</span>
           </div>
           <div class="stat-row">
-            <span class="sv">{result.stats.home.shotsOnTarget}</span>
+            <span class="sv">{liveStats.home.shotsOnTarget}</span>
             <span class="sl">in porta</span>
-            <span class="sv">{result.stats.away.shotsOnTarget}</span>
+            <span class="sv">{liveStats.away.shotsOnTarget}</span>
           </div>
           <div class="stat-row">
-            <span class="sv">{result.stats.home.corners}</span>
+            <span class="sv">{liveStats.home.corners}</span>
             <span class="sl">Corner</span>
-            <span class="sv">{result.stats.away.corners}</span>
+            <span class="sv">{liveStats.away.corners}</span>
           </div>
           <div class="stat-row">
-            <span class="sv">{result.stats.home.fouls}</span>
+            <span class="sv">{liveStats.home.fouls}</span>
             <span class="sl">Falli</span>
-            <span class="sv">{result.stats.away.fouls}</span>
+            <span class="sv">{liveStats.away.fouls}</span>
           </div>
           <div class="stat-row">
-            <span class="sv">{result.stats.home.yellowCards}</span>
-            <span class="sl">🟨</span>
-            <span class="sv">{result.stats.away.yellowCards}</span>
+            <span class="sv">{liveStats.home.yellowCards}</span>
+            <span class="sl">Gialli</span>
+            <span class="sv">{liveStats.away.yellowCards}</span>
           </div>
-        {/if}
-      </aside>
+          {#if liveStats.home.redCards > 0 || liveStats.away.redCards > 0}
+            <div class="stat-row">
+              <span class="sv">{liveStats.home.redCards}</span>
+              <span class="sl">Rossi</span>
+              <span class="sv">{liveStats.away.redCards}</span>
+            </div>
+          {/if}
+        </aside>
+      </section>
     </main>
 
     <footer class="controls">
@@ -804,35 +853,36 @@
     grid-template-columns: 1fr auto 1fr;
     gap: 20px;
     align-items: center;
-    padding: 24px clamp(16px, 4vw, 56px);
+    padding: 14px clamp(16px, 4vw, 56px);
     background: rgba(0, 0, 0, 0.5);
     border-bottom: 1px solid rgba(252, 211, 77, 0.18);
+    flex-shrink: 0;
   }
   .team-side {
     display: flex; align-items: center; gap: 14px;
   }
   .team-side.away { flex-direction: row-reverse; }
   .crest-big {
-    width: 64px; height: 64px;
-    border-radius: 12px;
+    width: 52px; height: 52px;
+    border-radius: 10px;
     background: linear-gradient(135deg, var(--c1), var(--c2));
-    color: #fff; font-weight: 800; font-size: 16px;
+    color: #fff; font-weight: 800; font-size: 14px;
     display: flex; align-items: center; justify-content: center;
     text-shadow: 0 1px 3px rgba(0, 0, 0, 0.7);
     box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
   }
   .team-name {
-    font-weight: 800; font-size: 18px;
-    max-width: 240px;
+    font-weight: 800; font-size: 16px;
+    max-width: 220px;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   .score-center {
-    display: flex; flex-direction: column; align-items: center; gap: 6px;
-    min-width: 200px;
+    display: flex; flex-direction: column; align-items: center; gap: 4px;
+    min-width: 160px;
   }
   .score-big {
-    display: flex; align-items: center; gap: 16px;
-    font-size: 56px;
+    display: flex; align-items: center; gap: 14px;
+    font-size: 44px;
     font-weight: 900;
     line-height: 1;
     font-variant-numeric: tabular-nums;
@@ -872,22 +922,45 @@
     border-radius: 4px;
   }
 
-  .stream-wrap {
+  /* ========== MATCH BODY: formazioni SX | cronaca+stats DX ========== */
+  .match-body {
     flex: 1;
     display: grid;
-    grid-template-columns: 1fr 320px;
-    gap: 18px;
-    padding: 20px clamp(16px, 4vw, 56px);
+    grid-template-columns: minmax(420px, 0.95fr) minmax(0, 1.05fr);
+    gap: 14px;
+    padding: 14px clamp(16px, 4vw, 56px);
     overflow: hidden;
     min-height: 0;
   }
-  .stream {
-    overflow-y: auto;
-    padding: 14px 18px;
+  .formations-pane {
     display: flex;
     flex-direction: column;
-    gap: 8px;
     min-height: 0;
+    overflow-y: auto;
+    padding: 12px 14px;
+  }
+  .right-pane {
+    display: grid;
+    grid-template-rows: 1fr auto;
+    gap: 14px;
+    min-height: 0;
+  }
+  .stream-card {
+    display: flex;
+    flex-direction: column;
+    padding: 14px 18px 6px;
+    min-height: 0;
+    overflow: hidden;
+  }
+  .stream-card .side-h { margin-bottom: 10px; }
+  .stream {
+    overflow-y: auto;
+    padding: 0 4px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-height: 0;
+    flex: 1;
   }
   .ev {
     display: flex;
@@ -935,9 +1008,12 @@
   .ev.ev-action { border-left-color: rgba(252, 211, 77, 0.3); }
   .ev.ev-sub { border-left-color: rgba(6, 182, 212, 0.5); }
 
-  .side-stats { padding: 18px 20px; }
+  .side-stats {
+    padding: 12px 16px 14px;
+    flex-shrink: 0;
+  }
   .side-h {
-    margin: 0 0 16px;
+    margin: 0 0 10px;
     color: #fcd34d;
     font-size: 11px;
     text-transform: uppercase;
@@ -948,7 +1024,7 @@
     display: grid;
     grid-template-columns: 50px 1fr 50px;
     align-items: center;
-    padding: 8px 0;
+    padding: 5px 0;
     border-bottom: 1px solid rgba(255, 255, 255, 0.04);
     font-size: 13px;
   }
@@ -971,10 +1047,11 @@
     display: flex;
     align-items: center;
     gap: 14px;
-    padding: 16px clamp(16px, 4vw, 56px);
+    padding: 10px clamp(16px, 4vw, 56px);
     background: rgba(0, 0, 0, 0.6);
     border-top: 1px solid rgba(252, 211, 77, 0.15);
     flex-wrap: wrap;
+    flex-shrink: 0;
   }
   .ctrl {
     background: rgba(0, 0, 0, 0.5);
@@ -1435,18 +1512,12 @@
   }
 
   /* ========== PANNELLO FORMAZIONI + VOTI LIVE ========== */
-  .lineups {
-    margin: 14px clamp(16px, 4vw, 56px) 0;
-    padding: 10px 16px 12px;
-    flex-shrink: 0;
-    max-height: 45vh;
-    overflow-y: auto;
-  }
   .lineups-head {
     display: flex;
     align-items: center;
     justify-content: center;
     margin-bottom: 8px;
+    flex-shrink: 0;
   }
   .lp-title {
     margin: 0;
@@ -1593,16 +1664,19 @@
   .team-col.away .lp-sep { text-align: right; }
 
   @media (max-width: 900px) {
-    .stream-wrap { grid-template-columns: 1fr; }
-    .side-stats { order: -1; }
+    .match-body {
+      grid-template-columns: 1fr;
+      padding: 10px 12px;
+      gap: 10px;
+      overflow-y: auto;
+    }
+    .formations-pane { max-height: 50vh; }
+    .right-pane { grid-template-rows: minmax(220px, 1fr) auto; }
     .team-name { display: none; }
-    .score-big { font-size: 44px; }
+    .score-big { font-size: 36px; }
     .controls { gap: 8px; }
     .ctrl.skip { margin-left: 0; }
-    .ov-ball { font-size: 100px; }
-    .ov-card-img { width: 100px; height: 140px; }
     .ov-card-text { font-size: 36px; }
     .lineups-grid { grid-template-columns: 1fr; gap: 12px; }
-    .lineups { margin: 14px 12px 0; padding: 14px; }
   }
 </style>
