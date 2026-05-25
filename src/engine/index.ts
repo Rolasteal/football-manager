@@ -9,5 +9,13 @@
  * - Stati serializzabili in JSON per salvataggio
  */
 
+// Tipi base dominio
 export type * from './types'
+// Tipi match (eventi, snapshot, renderer interface)
 export type * from './match/types'
+// Tipi tattici
+export type * from './tactics/types'
+// Tipi competizione (fixture, risultati, classifica)
+export type * from './competition/types'
+// Tipi carriera (save container)
+export type * from './career/types'
