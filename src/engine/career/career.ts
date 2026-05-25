@@ -326,9 +326,24 @@ export function advanceMatchday(career: Career): AdvanceMatchdayResult {
     if (f.status === 'played') continue
     const home = career.teams[f.homeId]
     const away = career.teams[f.awayId]
-    const homePlayers = Object.values(career.players).filter(p => p.teamId === f.homeId)
-    const awayPlayers = Object.values(career.players).filter(p => p.teamId === f.awayId)
-    const result = simulateMatch({ home, away, homePlayers, awayPlayers, rng })
+    const homeRoster = Object.values(career.players).filter(p => p.teamId === f.homeId)
+    const awayRoster = Object.values(career.players).filter(p => p.teamId === f.awayId)
+
+    // Lineup: la mia da club.lineup, le altre con autoLineup deterministico
+    const isMyHome = f.homeId === career.club.teamId
+    const isMyAway = f.awayId === career.club.teamId
+    const fallback = FORMATIONS[career.club.tactics.formation] ?? FORMATIONS['4-3-3']
+    const homeLineup = isMyHome ? career.club.lineup : autoLineup(fallback, homeRoster)
+    const awayLineup = isMyAway ? career.club.lineup : autoLineup(fallback, awayRoster)
+
+    // SOLO gli 11 titolari vanno all'engine — niente cartellini/eventi a riserve.
+    // Sostituzioni live verranno gestite in Fase 2.
+    const homeStarters = homeLineup.starters.map(id => career.players[id]).filter(Boolean)
+    const awayStarters = awayLineup.starters.map(id => career.players[id]).filter(Boolean)
+
+    const result = simulateMatch({ home, away, homePlayers: homeStarters, awayPlayers: awayStarters, rng })
+    result.homeLineup = homeLineup
+    result.awayLineup = awayLineup
     f.status = 'played'
     f.result = result
     count++

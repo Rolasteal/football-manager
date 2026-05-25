@@ -5,6 +5,7 @@
 
 import type { EntityId } from '$engine/types'
 import type { MatchEvent } from '$engine/match/types'
+import type { Lineup } from '$engine/tactics/types'
 
 export type FixtureStatus = 'scheduled' | 'in_progress' | 'played' | 'postponed'
 
@@ -33,6 +34,9 @@ export interface MatchResult {
   ratings: Record<EntityId, number>
   /** Marcatori in ordine (per cronistoria veloce) */
   scorers: Scorer[]
+  /** Lineup utilizzata dalle due squadre (gli 11 sono usati dall'engine; le riserve restano in panchina). */
+  homeLineup?: Lineup
+  awayLineup?: Lineup
 }
 
 export interface MatchStats {

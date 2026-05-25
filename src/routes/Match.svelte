@@ -252,6 +252,24 @@
 
   let fantaBonus = $derived(computeFantaBonus(shown))
 
+  // ====== BADGES ICONE accanto al nome (pallone gol, giallo, rosso) ======
+  interface PlayerBadges { goals: number; yellow: boolean; red: boolean }
+  function computePlayerBadges(events: MatchEvent[]): Record<EntityId, PlayerBadges> {
+    const r: Record<EntityId, PlayerBadges> = {}
+    for (const ev of events) {
+      if (!ev.playerId) continue
+      if (!r[ev.playerId]) r[ev.playerId] = { goals: 0, yellow: false, red: false }
+      if (ev.kind === 'goal') r[ev.playerId].goals++
+      if (ev.kind === 'yellow_card') r[ev.playerId].yellow = true
+      if (ev.kind === 'red_card') r[ev.playerId].red = true
+    }
+    return r
+  }
+  let badges = $derived(computePlayerBadges(shown))
+  function badgeOf(id: EntityId): PlayerBadges {
+    return badges[id] ?? { goals: 0, yellow: false, red: false }
+  }
+
   // ====== STATISTICHE LIVE (da shown[], non da result.stats che è il totale finale) ======
   function emptyTeamStats(): TeamMatchStats {
     return { possession: 50, shots: 0, shotsOnTarget: 0, corners: 0, fouls: 0, yellowCards: 0, redCards: 0, passes: 0, passAccuracy: 0 }
@@ -340,19 +358,24 @@
         return
       }
       result = myFixture.result
-      // Lineup di entrambe le squadre: la mia da career.club.lineup,
-      // l'avversaria generata on-the-fly (Fase 1: l'engine non simula
-      // la lineup AI separatamente, usiamo autoLineup come proxy)
-      const myTeamId = career.club.teamId
-      const homePlayers = Object.values(career.players).filter(p => p.teamId === myFixture!.homeId)
-      const awayPlayers = Object.values(career.players).filter(p => p.teamId === myFixture!.awayId)
-      const fallbackFormation = FORMATIONS[career.club.tactics.formation] ?? FORMATIONS['4-3-3']
-      if (myFixture.homeId === myTeamId) {
-        homeLineup = career.club.lineup
-        awayLineup = autoLineup(fallbackFormation, awayPlayers)
+      // Lineup: ora le legge dal result (calcolate in advanceMatchday e
+      // usate dall'engine — così gli eventi sono coerenti coi titolari).
+      // Fallback su autoLineup per save vecchi senza i campi nuovi.
+      if (result.homeLineup && result.awayLineup) {
+        homeLineup = result.homeLineup
+        awayLineup = result.awayLineup
       } else {
-        homeLineup = autoLineup(fallbackFormation, homePlayers)
-        awayLineup = career.club.lineup
+        const myTeamId = career.club.teamId
+        const homePlayers = Object.values(career.players).filter(p => p.teamId === myFixture!.homeId)
+        const awayPlayers = Object.values(career.players).filter(p => p.teamId === myFixture!.awayId)
+        const fallbackFormation = FORMATIONS[career.club.tactics.formation] ?? FORMATIONS['4-3-3']
+        if (myFixture.homeId === myTeamId) {
+          homeLineup = career.club.lineup
+          awayLineup = autoLineup(fallbackFormation, awayPlayers)
+        } else {
+          homeLineup = autoLineup(fallbackFormation, homePlayers)
+          awayLineup = career.club.lineup
+        }
       }
       // Persistenza fuori dal critical path
       persistActiveCareer()
@@ -636,16 +659,20 @@
           <div class="ov-card-text big">ESPULSIONE!</div>
           {#if overlay.playerName}<div class="ov-player">{overlay.playerName}</div>{/if}
         {:else if overlay.kind === 'kickoff'}
-          <img class="ov-break-img" src="/assets/match/Inizio_partita.png" alt="Inizio partita" />
+          <div class="ov-break-fallback">INIZIO PARTITA</div>
+          <img class="ov-break-img" src="/assets/match/Inizio_partita.png" alt="Inizio partita" decoding="async" />
           <div class="ov-break-sub">{teamName(myFixture.homeId)} · {teamName(myFixture.awayId)}</div>
         {:else if overlay.kind === 'half_time'}
-          <img class="ov-break-img" src="/assets/match/Fine_primo_tempo.png" alt="Fine primo tempo" />
+          <div class="ov-break-fallback">FINE PRIMO TEMPO</div>
+          <img class="ov-break-img" src="/assets/match/Fine_primo_tempo.png" alt="Fine primo tempo" decoding="async" />
           <div class="ov-break-sub">Parziale: <strong>{homeScore} – {awayScore}</strong></div>
         {:else if overlay.kind === 'second_half'}
-          <img class="ov-break-img" src="/assets/match/Inizio_secondo_tempo.png" alt="Inizio secondo tempo" />
+          <div class="ov-break-fallback">INIZIO SECONDO TEMPO</div>
+          <img class="ov-break-img" src="/assets/match/Inizio_secondo_tempo.png" alt="Inizio secondo tempo" decoding="async" />
           <div class="ov-break-sub">{homeScore} – {awayScore}</div>
         {:else if overlay.kind === 'full_time'}
-          <img class="ov-break-img" src="/assets/match/Fine_partita.png" alt="Fine partita" />
+          <div class="ov-break-fallback">FINE PARTITA</div>
+          <img class="ov-break-img" src="/assets/match/Fine_partita.png" alt="Fine partita" decoding="async" />
           <div class="ov-break-sub">Risultato finale: <strong>{homeScore} – {awayScore}</strong></div>
         {:else if overlay.kind === 'penalty'}
           <div class="ov-pen-badge">⚖️</div>
@@ -699,6 +726,9 @@
                     <span class="shirt">{shirtOf(pid)}</span>
                     <span class="pname">
                       {lastNameOf(pid)}
+                      {#each Array(badgeOf(pid).goals) as _, gi (gi)}<span class="badge-ball" title="Gol">⚽</span>{/each}
+                      {#if badgeOf(pid).yellow}<span class="badge-yellow" title="Ammonito">🟨</span>{/if}
+                      {#if badgeOf(pid).red}<span class="badge-red" title="Espulso">🟥</span>{/if}
                       {#if bonusOf(pid) !== 0}<span class="bonus-chip" class:b-plus={bonusOf(pid) > 0}>{fmtBonus(bonusOf(pid))}</span>{/if}
                     </span>
                     <span class="rate {ratingClass(totalOf(pid))}">{fmtRating(totalOf(pid))}</span>
@@ -729,6 +759,9 @@
                     <span class="rate {ratingClass(totalOf(pid))}">{fmtRating(totalOf(pid))}</span>
                     <span class="pname">
                       {lastNameOf(pid)}
+                      {#each Array(badgeOf(pid).goals) as _, gi (gi)}<span class="badge-ball" title="Gol">⚽</span>{/each}
+                      {#if badgeOf(pid).yellow}<span class="badge-yellow" title="Ammonito">🟨</span>{/if}
+                      {#if badgeOf(pid).red}<span class="badge-red" title="Espulso">🟥</span>{/if}
                       {#if bonusOf(pid) !== 0}<span class="bonus-chip" class:b-plus={bonusOf(pid) > 0}>{fmtBonus(bonusOf(pid))}</span>{/if}
                     </span>
                     <span class="shirt">{shirtOf(pid)}</span>
@@ -832,6 +865,8 @@
     display: flex;
     flex-direction: column;
     overflow: hidden;
+    position: relative;
+    isolation: isolate;
     transition: background 0.3s;
   }
   .page.flash::after {
@@ -1191,8 +1226,9 @@
   /* ========== OVERLAY DRAMMATICI ========== */
   .overlay {
     position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
     inset: 0;
-    z-index: 100;
+    z-index: 9999;
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -1338,6 +1374,39 @@
     height: 100%;
     object-fit: cover;
     animation: breakImgIn 0.7s cubic-bezier(0.16, 1, 0.3, 1);
+    z-index: 2;
+  }
+  /* Fallback testuale dietro l'img: se la PNG non carica, vedi comunque
+     un titolo gigante centrato con la palette nero+oro del design. */
+  .ov-break-fallback {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0 8vw;
+    text-align: center;
+    font-size: clamp(56px, 10vw, 140px);
+    font-weight: 900;
+    letter-spacing: 0.03em;
+    line-height: 1.05;
+    background: radial-gradient(ellipse at center, rgba(0,0,0,0.95), rgba(0,0,0,0.99));
+    background-image:
+      radial-gradient(ellipse 80% 60% at 50% 50%, rgba(245, 158, 11, 0.18), transparent 60%),
+      radial-gradient(ellipse at center, rgba(0, 0, 0, 0.96), rgba(0, 0, 0, 0.99));
+    color: transparent;
+    -webkit-background-clip: text;
+    background-clip: text;
+    z-index: 1;
+  }
+  .ov-break-fallback::before {
+    content: attr(data-text);
+  }
+  /* Trick: use background-clip text on a span inside. Simpler: solid gold. */
+  .overlay.o-break .ov-break-fallback {
+    background: radial-gradient(ellipse at center, rgba(0, 0, 0, 0.96), rgba(0, 0, 0, 0.99));
+    color: #fcd34d;
+    text-shadow: 0 6px 30px rgba(245, 158, 11, 0.5);
   }
   @keyframes breakImgIn {
     0%   { transform: scale(1.08); opacity: 0; }
@@ -1509,6 +1578,15 @@
     color: #86efac;
     border-color: rgba(34, 197, 94, 0.45);
   }
+  .badge-ball, .badge-yellow, .badge-red {
+    display: inline-block;
+    margin-left: 4px;
+    font-size: 12px;
+    vertical-align: middle;
+    line-height: 1;
+    filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.6));
+  }
+  .badge-ball + .badge-ball { margin-left: 1px; }
 
   /* ========== PANNELLO FORMAZIONI + VOTI LIVE ========== */
   .lineups-head {
