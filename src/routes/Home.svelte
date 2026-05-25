@@ -86,10 +86,11 @@
     ></button>
 
     <!-- ===== Bottoni azione principali ===== -->
+    <!-- Coordinate calibrate da screenshot debug 2026-05-25 -->
     <button
       class="hitbox"
       data-tag="5·NUOVA CARRIERA"
-      style="--x: 24.3%; --y: 58.7%; --w: 19.2%; --h: 6.5%;"
+      style="--x: 23%; --y: 60.5%; --w: 21.5%; --h: 8.5%;"
       onclick={startNew}
       aria-label="Nuova Carriera"
       title="Inizia una nuova carriera"
@@ -98,7 +99,7 @@
     <button
       class="hitbox"
       data-tag="6·NESSUN SALV."
-      style="--x: 45.5%; --y: 58.7%; --w: 19.2%; --h: 6.5%;"
+      style="--x: 45%; --y: 60.5%; --w: 21.5%; --h: 8.5%;"
       onclick={continueGame}
       disabled={!hasSave}
       aria-label={hasSave ? 'Continua partita salvata' : 'Nessun salvataggio disponibile'}
