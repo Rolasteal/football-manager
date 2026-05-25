@@ -113,7 +113,11 @@ export async function saveCareer(career: Career): Promise<void> {
   const db = await getDb()
   const rec = persistedOf(career)
   career.updatedAt = rec.updatedAt
-  await db.put('saves', rec)
+  // IndexedDB usa structured clone, che fallisce sui Proxy di Svelte 5 $state.
+  // JSON round-trip restituisce un POJO puro serializzabile (tutto il nostro
+  // schema è già JSON-safe per design — niente Map/Set/Date/funzioni).
+  const pojo = JSON.parse(JSON.stringify(rec)) as PersistedCareer
+  await db.put('saves', pojo)
 }
 
 export async function deleteCareer(id: string): Promise<void> {
