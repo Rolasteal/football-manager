@@ -1,0 +1,32 @@
+{
+  "name": "football-manager",
+  "description": "Manageriale calcistico gratuito, online e completo — costruisci il tuo club dal nulla.",
+  "private": true,
+  "version": "0.1.0-alpha.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "check": "svelte-check --tsconfig ./tsconfig.app.json && tsc -p tsconfig.node.json",
+    "typecheck": "svelte-check --tsconfig ./tsconfig.app.json --threshold error"
+  },
+  "devDependencies": {
+    "@rolldown/binding-win32-x64-msvc": "^1.0.2",
+    "@sveltejs/vite-plugin-svelte": "^7.1.2",
+    "@tailwindcss/vite": "^4.3.0",
+    "@tsconfig/svelte": "^5.0.8",
+    "@types/node": "^24.12.3",
+    "svelte": "^5.55.5",
+    "svelte-check": "^4.4.8",
+    "tailwindcss": "^4.3.0",
+    "typescript": "~6.0.2",
+    "vite": "^8.0.12"
+  },
+  "dependencies": {
+    "@lucide/svelte": "^1.16.0",
+    "idb": "^8.0.3",
+    "pixi.js": "^8.18.1",
+    "svelte-spa-router": "^5.1.0"
+  }
+}
