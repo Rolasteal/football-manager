@@ -2,9 +2,11 @@
   import { push } from 'svelte-spa-router'
   import { onMount, onDestroy, tick } from 'svelte'
   import { careerStore, persistActiveCareer } from '$state/career.svelte'
-  import { advanceMatchday } from '$engine/career/career'
+  import { advanceMatchday, autoLineup, FORMATIONS } from '$engine/career/career'
   import type { Fixture, MatchResult } from '$engine/competition/types'
   import type { MatchEvent } from '$engine/match/types'
+  import type { Lineup } from '$engine/tactics/types'
+  import type { EntityId, Player } from '$engine/types'
 
   const store = careerStore()
   let career = $derived(store.career)
@@ -19,6 +21,8 @@
 
   let myFixture = $state<Fixture | null>(null)
   let result = $state<MatchResult | null>(null)
+  let homeLineup = $state<Lineup | null>(null)
+  let awayLineup = $state<Lineup | null>(null)
   let shown = $state<MatchEvent[]>([])
   let currentIdx = $state(0)
   let homeScore = $state(0)
@@ -124,6 +128,71 @@
     return teamName(side === 'home' ? myFixture.homeId : myFixture.awayId)
   }
 
+  // ====== LINEUP + VOTI LIVE (fantacalcio v1) ======
+  // NB: la versione "definitiva" dei voti la rifineremo dopo (vedi
+  // memoria [[project-voti-fantacalcio]]).
+  function getPlayer(id: EntityId): Player | null {
+    return career?.players[id] ?? null
+  }
+  function lastNameOf(id: EntityId): string {
+    return getPlayer(id)?.lastName ?? '—'
+  }
+  function shirtOf(id: EntityId): string {
+    const n = getPlayer(id)?.shirtNumber
+    return n == null ? '—' : String(n)
+  }
+
+  /**
+   * Voti LIVE 4.0-10.0 calcolati sugli eventi già mostrati.
+   * Replica (semplificata) dell'algoritmo dell'engine:
+   *  goal +1.0, assist +0.5, save +0.3, shot_on +0.1,
+   *  shot off -0.05, foul -0.05, yellow -0.5, red -1.5.
+   */
+  function computeLiveRatings(events: MatchEvent[]): Record<EntityId, number> {
+    const r: Record<EntityId, number> = {}
+    const adj = (id: EntityId | undefined, delta: number) => {
+      if (!id) return
+      if (r[id] === undefined) r[id] = 6.0
+      r[id] = Math.max(4, Math.min(10, r[id] + delta))
+    }
+    const touch = (id: EntityId | undefined) => {
+      if (id && r[id] === undefined) r[id] = 6.0
+    }
+    for (const ev of events) {
+      touch(ev.playerId)
+      touch(ev.secondaryPlayerId)
+      switch (ev.kind) {
+        case 'goal':
+          adj(ev.playerId, +1.0)
+          if (ev.secondaryPlayerId) adj(ev.secondaryPlayerId, +0.5)
+          break
+        case 'shot_on_target': adj(ev.playerId, +0.1); break
+        case 'save':           adj(ev.playerId, +0.3); break
+        case 'shot':           adj(ev.playerId, -0.05); break
+        case 'foul':           adj(ev.playerId, -0.05); break
+        case 'yellow_card':    adj(ev.playerId, -0.5); break
+        case 'red_card':       adj(ev.playerId, -1.5); break
+      }
+    }
+    return r
+  }
+
+  let liveRatings = $derived(computeLiveRatings(shown))
+
+  function rating(id: EntityId): number {
+    const v = liveRatings[id]
+    return v === undefined ? 6.0 : v
+  }
+  function ratingClass(v: number): string {
+    if (v >= 7.5) return 'r-top'
+    if (v >= 6.5) return 'r-ok'
+    if (v >= 5.5) return 'r-mid'
+    return 'r-low'
+  }
+  function fmtRating(v: number): string {
+    return v.toFixed(1)
+  }
+
   onMount(async () => {
     if (!career) { push('/'); return }
     // Preload asset overlay per evitare lag al primo trigger
@@ -151,6 +220,20 @@
         return
       }
       result = myFixture.result
+      // Lineup di entrambe le squadre: la mia da career.club.lineup,
+      // l'avversaria generata on-the-fly (Fase 1: l'engine non simula
+      // la lineup AI separatamente, usiamo autoLineup come proxy)
+      const myTeamId = career.club.teamId
+      const homePlayers = Object.values(career.players).filter(p => p.teamId === myFixture!.homeId)
+      const awayPlayers = Object.values(career.players).filter(p => p.teamId === myFixture!.awayId)
+      const fallbackFormation = FORMATIONS[career.club.tactics.formation] ?? FORMATIONS['4-3-3']
+      if (myFixture.homeId === myTeamId) {
+        homeLineup = career.club.lineup
+        awayLineup = autoLineup(fallbackFormation, awayPlayers)
+      } else {
+        homeLineup = autoLineup(fallbackFormation, homePlayers)
+        awayLineup = career.club.lineup
+      }
       // Persistenza fuori dal critical path
       persistActiveCareer()
       // Avvia replay
@@ -411,6 +494,70 @@
           <div class="ov-break-sub">Risultato finale: <strong>{homeScore} – {awayScore}</strong></div>
         {/if}
       </div>
+    {/if}
+
+    {#if homeLineup && awayLineup}
+      <section class="lineups card-gold">
+        <div class="lineups-head">
+          <h3 class="lp-title">Formazioni</h3>
+        </div>
+        <div class="lineups-grid">
+          <!-- HOME -->
+          <div class="team-col">
+            <div class="team-head" style="--c1: {colors(myFixture.homeId).c1}; --c2: {colors(myFixture.homeId).c2};">
+              <span class="crest-sm">{teamShort(myFixture.homeId)}</span>
+              <span class="th-name">{teamName(myFixture.homeId)}</span>
+              <span class="th-form">{homeLineup.formation}</span>
+            </div>
+            <ul class="lp-list">
+              {#each homeLineup.starters as pid (pid)}
+                <li class="lp-row">
+                  <span class="shirt">{shirtOf(pid)}</span>
+                  <span class="pname">{lastNameOf(pid)}</span>
+                  <span class="rate {ratingClass(rating(pid))}">{fmtRating(rating(pid))}</span>
+                </li>
+              {/each}
+              {#if homeLineup.bench.length}
+                <li class="lp-sep">A disposizione</li>
+                {#each homeLineup.bench as pid (pid)}
+                  <li class="lp-row sub">
+                    <span class="shirt">{shirtOf(pid)}</span>
+                    <span class="pname">{lastNameOf(pid)}</span>
+                    <span class="rate {ratingClass(rating(pid))}">{fmtRating(rating(pid))}</span>
+                  </li>
+                {/each}
+              {/if}
+            </ul>
+          </div>
+          <!-- AWAY -->
+          <div class="team-col away">
+            <div class="team-head" style="--c1: {colors(myFixture.awayId).c1}; --c2: {colors(myFixture.awayId).c2};">
+              <span class="crest-sm">{teamShort(myFixture.awayId)}</span>
+              <span class="th-name">{teamName(myFixture.awayId)}</span>
+              <span class="th-form">{awayLineup.formation}</span>
+            </div>
+            <ul class="lp-list">
+              {#each awayLineup.starters as pid (pid)}
+                <li class="lp-row">
+                  <span class="rate {ratingClass(rating(pid))}">{fmtRating(rating(pid))}</span>
+                  <span class="pname">{lastNameOf(pid)}</span>
+                  <span class="shirt">{shirtOf(pid)}</span>
+                </li>
+              {/each}
+              {#if awayLineup.bench.length}
+                <li class="lp-sep">A disposizione</li>
+                {#each awayLineup.bench as pid (pid)}
+                  <li class="lp-row sub">
+                    <span class="rate {ratingClass(rating(pid))}">{fmtRating(rating(pid))}</span>
+                    <span class="pname">{lastNameOf(pid)}</span>
+                    <span class="shirt">{shirtOf(pid)}</span>
+                  </li>
+                {/each}
+              {/if}
+            </ul>
+          </div>
+        </div>
+      </section>
     {/if}
 
     <main class="stream-wrap">
@@ -981,6 +1128,161 @@
     font-variant-numeric: tabular-nums;
   }
 
+  /* ========== PANNELLO FORMAZIONI + VOTI LIVE ========== */
+  .lineups {
+    margin: 20px clamp(16px, 4vw, 56px) 0;
+    padding: 16px 20px 18px;
+  }
+  .lineups-head {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-bottom: 12px;
+  }
+  .lp-title {
+    margin: 0;
+    color: #fcd34d;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.22em;
+    font-weight: 800;
+  }
+  .lineups-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 18px;
+  }
+  .team-col { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+  .team-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 10px;
+    background: linear-gradient(90deg, rgba(0, 0, 0, 0.6), rgba(252, 211, 77, 0.06));
+    border: 1px solid rgba(252, 211, 77, 0.18);
+    border-radius: 8px;
+  }
+  .team-col.away .team-head {
+    flex-direction: row-reverse;
+    background: linear-gradient(270deg, rgba(0, 0, 0, 0.6), rgba(252, 211, 77, 0.06));
+  }
+  .crest-sm {
+    width: 32px; height: 32px;
+    border-radius: 6px;
+    background: linear-gradient(135deg, var(--c1), var(--c2));
+    color: #fff;
+    font-weight: 800;
+    font-size: 11px;
+    display: flex; align-items: center; justify-content: center;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.7);
+    flex: 0 0 auto;
+  }
+  .th-name {
+    flex: 1;
+    color: #fef3c7;
+    font-weight: 700;
+    font-size: 14px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .th-form {
+    color: #fcd34d;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    background: rgba(0, 0, 0, 0.5);
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-variant-numeric: tabular-nums;
+  }
+  .lp-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .lp-row {
+    display: grid;
+    grid-template-columns: 32px 1fr 44px;
+    align-items: center;
+    gap: 10px;
+    padding: 5px 8px;
+    border-radius: 6px;
+    font-size: 13px;
+    transition: background 0.15s;
+  }
+  .team-col.away .lp-row {
+    grid-template-columns: 44px 1fr 32px;
+  }
+  .lp-row:hover { background: rgba(252, 211, 77, 0.06); }
+  .lp-row.sub {
+    opacity: 0.72;
+    font-size: 12px;
+  }
+  .lp-row .shirt {
+    text-align: center;
+    color: #1a1410;
+    background: linear-gradient(180deg, #fde68a, #fbbf24);
+    border-radius: 4px;
+    font-weight: 800;
+    padding: 2px 0;
+    font-variant-numeric: tabular-nums;
+    font-family: var(--font-mono, monospace);
+    font-size: 12px;
+  }
+  .lp-row.sub .shirt {
+    background: linear-gradient(180deg, #d4cfc1, #918778);
+    color: #1a1410;
+  }
+  .lp-row .pname {
+    color: #d4cfc1;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    font-weight: 600;
+  }
+  .team-col.away .lp-row .pname { text-align: right; }
+  .lp-row .rate {
+    text-align: center;
+    font-weight: 800;
+    font-variant-numeric: tabular-nums;
+    padding: 3px 6px;
+    border-radius: 4px;
+    font-size: 13px;
+    border: 1px solid transparent;
+  }
+  .rate.r-top {
+    background: linear-gradient(180deg, #fde68a, #fbbf24);
+    color: #1a1410;
+    border-color: #fcd34d;
+    box-shadow: 0 0 8px rgba(252, 211, 77, 0.35);
+  }
+  .rate.r-ok {
+    background: rgba(252, 211, 77, 0.18);
+    color: #fef3c7;
+    border-color: rgba(252, 211, 77, 0.4);
+  }
+  .rate.r-mid {
+    background: rgba(255, 255, 255, 0.06);
+    color: #d4cfc1;
+  }
+  .rate.r-low {
+    background: rgba(220, 38, 38, 0.18);
+    color: #fca5a5;
+    border-color: rgba(220, 38, 38, 0.4);
+  }
+  .lp-sep {
+    margin-top: 8px;
+    padding: 4px 8px;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.18em;
+    color: #918778;
+    font-weight: 800;
+    border-top: 1px dashed rgba(252, 211, 77, 0.18);
+    padding-top: 8px;
+  }
+  .team-col.away .lp-sep { text-align: right; }
+
   @media (max-width: 900px) {
     .stream-wrap { grid-template-columns: 1fr; }
     .side-stats { order: -1; }
@@ -991,5 +1293,7 @@
     .ov-ball { font-size: 100px; }
     .ov-card-img { width: 100px; height: 140px; }
     .ov-card-text { font-size: 36px; }
+    .lineups-grid { grid-template-columns: 1fr; gap: 12px; }
+    .lineups { margin: 14px 12px 0; padding: 14px; }
   }
 </style>
