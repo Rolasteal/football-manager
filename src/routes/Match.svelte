@@ -35,19 +35,37 @@
   let overlayTimer: ReturnType<typeof setTimeout> | null = null
 
   function eventDelay(): number {
-    // Default 1000ms/evento (godibile); 0.5x = lento, 2x/4x = veloce
-    const baseMs = 1000
+    // Default 5000ms/evento (cinematografico); 0.5x = ultra-lento, 2x/4x/8x = veloce
+    const baseMs = 5000
     return Math.max(80, baseMs / speed)
   }
 
   // Durata overlay drammatici (NEUTRA rispetto a speed: la "pausa narrativa" è fissa)
   const OVERLAY_MS: Record<OverlayKind, number> = {
-    goal: 3500,
-    yellow: 1800,
-    red: 2500,
-    half_time: 2500,
-    full_time: 2800,
-    kickoff: 1600,
+    goal: 4200,
+    yellow: 2200,
+    red: 3000,
+    half_time: 2800,
+    full_time: 3200,
+    kickoff: 1800,
+  }
+
+  // Pre-evento "suspense": qualcosa sta per accadere
+  type SuspenseKind = 'goal' | 'yellow' | 'red'
+  let suspense = $state<SuspenseKind | null>(null)
+  let suspenseTimer: ReturnType<typeof setTimeout> | null = null
+
+  const SUSPENSE_MS: Record<SuspenseKind, number> = {
+    goal: 2000,
+    yellow: 1400,
+    red: 1900,
+  }
+
+  function suspenseKindOf(ev: MatchEvent): SuspenseKind | null {
+    if (ev.kind === 'goal') return 'goal'
+    if (ev.kind === 'yellow_card') return 'yellow'
+    if (ev.kind === 'red_card') return 'red'
+    return null
   }
 
   function nameOf(playerId?: string): string {
@@ -63,6 +81,11 @@
 
   onMount(async () => {
     if (!career) { push('/'); return }
+    // Preload asset overlay per evitare lag al primo trigger
+    for (const src of ['/assets/match/Gol.png', '/assets/match/Cartellino_giallo.png', '/assets/match/Cartellino_rosso.png']) {
+      const img = new Image()
+      img.src = src
+    }
     try {
       // Avanza la giornata (simula tutte le partite, trova la mia)
       const adv = advanceMatchday(career)
@@ -86,6 +109,7 @@
   onDestroy(() => {
     if (timer) { clearTimeout(timer); timer = null }
     if (overlayTimer) { clearTimeout(overlayTimer); overlayTimer = null }
+    if (suspenseTimer) { clearTimeout(suspenseTimer); suspenseTimer = null }
   })
 
   function maybeOpenOverlay(ev: MatchEvent): boolean {
@@ -116,14 +140,28 @@
 
   function tickReplay() {
     if (!result || !playing) return
-    // Se c'è un overlay attivo, attendi che si chiuda (sarà lui a richiamarci)
-    if (overlay) return
+    if (overlay || suspense) return  // blocchi attivi: aspetta che si liberino
     if (currentIdx >= result.events.length) {
       finished = true
       playing = false
       return
     }
     const ev = result.events[currentIdx]
+    // Se è un evento saliente, prima fase suspense
+    const sKind = suspenseKindOf(ev)
+    if (sKind) {
+      suspense = sKind
+      suspenseTimer = setTimeout(() => {
+        suspense = null
+        suspenseTimer = null
+        if (playing && !finished) consumeEvent(ev)
+      }, SUSPENSE_MS[sKind])
+      return
+    }
+    consumeEvent(ev)
+  }
+
+  function consumeEvent(ev: MatchEvent) {
     shown = [...shown, ev]
     currentIdx++
     minute = ev.minute
@@ -134,7 +172,6 @@
       setTimeout(() => goalFlash = false, 800)
     }
     autoscroll()
-    // Overlay drammatico: blocca il tick finché non si chiude
     if (maybeOpenOverlay(ev)) return
     timer = setTimeout(tickReplay, eventDelay())
   }
@@ -155,7 +192,9 @@
     if (!result) return
     if (timer) { clearTimeout(timer); timer = null }
     if (overlayTimer) { clearTimeout(overlayTimer); overlayTimer = null }
+    if (suspenseTimer) { clearTimeout(suspenseTimer); suspenseTimer = null }
     overlay = null
+    suspense = null
     // Applica tutti gli eventi rimanenti
     for (let i = currentIdx; i < result.events.length; i++) {
       const ev = result.events[i]
@@ -243,10 +282,21 @@
       </div>
     </header>
 
+    {#if suspense}
+      <div class="suspense" class:s-red={suspense === 'red'} class:s-goal={suspense === 'goal'}>
+        <div class="susp-pulse"></div>
+        <div class="susp-text">
+          {#if suspense === 'goal'}OCCASIONE…{/if}
+          {#if suspense === 'yellow'}FALLO PERICOLOSO…{/if}
+          {#if suspense === 'red'}INTERVENTO DURO…{/if}
+        </div>
+      </div>
+    {/if}
+
     {#if overlay}
       <div class="overlay" class:o-goal={overlay.kind === 'goal'} class:o-card={overlay.kind === 'yellow' || overlay.kind === 'red'} class:o-red={overlay.kind === 'red'} class:o-break={overlay.kind === 'half_time' || overlay.kind === 'full_time' || overlay.kind === 'kickoff'}>
         {#if overlay.kind === 'goal'}
-          <div class="ov-ball">⚽</div>
+          <img class="ov-goal-img" src="/assets/match/Gol.png" alt="Gol" />
           <div class="ov-goal-text">GOOOOOL!</div>
           {#if overlay.playerName}
             <div class="ov-scorer">{overlay.playerName}</div>
@@ -256,11 +306,11 @@
           {/if}
           <div class="ov-score">{homeScore} – {awayScore}</div>
         {:else if overlay.kind === 'yellow'}
-          <div class="ov-card-img yellow"></div>
+          <img class="ov-ref-img" src="/assets/match/Cartellino_giallo.png" alt="Cartellino giallo" />
           <div class="ov-card-text">AMMONIZIONE</div>
           {#if overlay.playerName}<div class="ov-player">{overlay.playerName}</div>{/if}
         {:else if overlay.kind === 'red'}
-          <div class="ov-card-img red"></div>
+          <img class="ov-ref-img" src="/assets/match/Cartellino_rosso.png" alt="Cartellino rosso" />
           <div class="ov-card-text big">ESPULSIONE!</div>
           {#if overlay.playerName}<div class="ov-player">{overlay.playerName}</div>{/if}
         {:else if overlay.kind === 'kickoff'}
@@ -328,7 +378,7 @@
         <button class="ctrl" onclick={togglePause}>{playing ? '⏸ Pausa' : '▶ Riprendi'}</button>
         <div class="speed">
           <span class="speed-l">Velocità</span>
-          {#each [0.5, 1, 2, 4] as s}
+          {#each [0.5, 1, 2, 4, 8] as s}
             <button class="speed-btn" class:active={speed === s} onclick={() => setSpeed(s)}>{s}x</button>
           {/each}
         </div>
@@ -614,6 +664,58 @@
     border-radius: 8px;
   }
 
+  /* ========== SUSPENSE PRE-EVENTO ========== */
+  .suspense {
+    position: fixed;
+    bottom: 110px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 90;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    background: rgba(0, 0, 0, 0.85);
+    border: 1px solid rgba(252, 211, 77, 0.55);
+    color: #fef3c7;
+    padding: 12px 22px;
+    border-radius: 999px;
+    font-weight: 800;
+    font-size: 13px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.7), 0 0 30px rgba(252, 211, 77, 0.18);
+    animation: suspenseIn 0.3s ease-out;
+  }
+  .suspense.s-red {
+    border-color: rgba(220, 38, 38, 0.7);
+    color: #fecaca;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.7), 0 0 30px rgba(220, 38, 38, 0.35);
+  }
+  .suspense.s-goal {
+    border-color: rgba(252, 211, 77, 0.85);
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.7), 0 0 40px rgba(245, 158, 11, 0.45);
+  }
+  @keyframes suspenseIn {
+    from { opacity: 0; transform: translate(-50%, 14px); }
+    to { opacity: 1; transform: translate(-50%, 0); }
+  }
+  .susp-pulse {
+    width: 12px; height: 12px;
+    border-radius: 50%;
+    background: #fcd34d;
+    box-shadow: 0 0 12px #fcd34d;
+    animation: suspPulse 0.7s ease-in-out infinite;
+  }
+  .suspense.s-red .susp-pulse {
+    background: #ef4444;
+    box-shadow: 0 0 12px #ef4444;
+  }
+  @keyframes suspPulse {
+    0%, 100% { transform: scale(1); opacity: 0.7; }
+    50%      { transform: scale(1.5); opacity: 1; }
+  }
+  .susp-text { font-family: var(--font-mono, monospace); }
+
   /* ========== OVERLAY DRAMMATICI ========== */
   .overlay {
     position: fixed;
@@ -624,7 +726,7 @@
     align-items: center;
     justify-content: center;
     gap: 14px;
-    background: radial-gradient(ellipse at center, rgba(0, 0, 0, 0.85) 30%, rgba(0, 0, 0, 0.98) 100%);
+    background: radial-gradient(ellipse at center, rgba(0, 0, 0, 0.88) 30%, rgba(0, 0, 0, 0.98) 100%);
     backdrop-filter: blur(8px);
     color: #fef3c7;
     animation: overlayFadeIn 0.25s ease-out;
@@ -638,21 +740,18 @@
   .overlay.o-goal {
     background:
       radial-gradient(ellipse 80% 60% at 50% 50%, rgba(245, 158, 11, 0.35), transparent 60%),
-      radial-gradient(ellipse at center, rgba(0, 0, 0, 0.90) 40%, rgba(0, 0, 0, 0.98) 100%);
+      radial-gradient(ellipse at center, rgba(0, 0, 0, 0.92) 40%, rgba(0, 0, 0, 0.98) 100%);
   }
-  .ov-ball {
-    font-size: 140px;
-    line-height: 1;
-    filter: drop-shadow(0 10px 40px rgba(245, 158, 11, 0.6));
-    animation: ballBounce 1.6s cubic-bezier(0.34, 1.56, 0.64, 1);
-    transform-origin: center;
+  .ov-goal-img {
+    width: clamp(240px, 36vw, 420px);
+    height: auto;
+    filter: drop-shadow(0 20px 60px rgba(245, 158, 11, 0.55));
+    animation: goalImg 1.4s cubic-bezier(0.16, 1, 0.3, 1);
   }
-  @keyframes ballBounce {
-    0%   { transform: scale(0) rotate(0deg); opacity: 0; }
-    35%  { transform: scale(1.4) rotate(360deg); opacity: 1; }
-    55%  { transform: scale(0.9) rotate(540deg); }
-    75%  { transform: scale(1.1) rotate(680deg); }
-    100% { transform: scale(1) rotate(720deg); opacity: 1; }
+  @keyframes goalImg {
+    0%   { transform: scale(0.4) translateY(-30px); opacity: 0; }
+    50%  { transform: scale(1.12) translateY(0); opacity: 1; }
+    100% { transform: scale(1) translateY(0); opacity: 1; }
   }
   .ov-goal-text {
     font-size: clamp(64px, 12vw, 140px);
@@ -704,37 +803,33 @@
     to { opacity: 1; transform: translateY(0); }
   }
 
-  /* --- CARTELLINI --- */
+  /* --- CARTELLINI (arbitro PNG) --- */
   .overlay.o-card { gap: 18px; }
   .overlay.o-red {
-    animation: overlayFadeIn 0.25s ease-out, shakeIt 0.5s 0.4s ease-in-out 2;
+    background:
+      radial-gradient(ellipse 60% 60% at 50% 50%, rgba(220, 38, 38, 0.20), transparent 70%),
+      radial-gradient(ellipse at center, rgba(0, 0, 0, 0.92) 30%, rgba(0, 0, 0, 0.99) 100%);
+    animation: overlayFadeIn 0.25s ease-out, shakeIt 0.5s 0.45s ease-in-out 2;
   }
   @keyframes shakeIt {
     0%, 100% { transform: translateX(0); }
-    25%      { transform: translateX(-8px); }
-    50%      { transform: translateX(8px); }
-    75%      { transform: translateX(-5px); }
+    25%      { transform: translateX(-10px); }
+    50%      { transform: translateX(10px); }
+    75%      { transform: translateX(-6px); }
   }
-  .ov-card-img {
-    width: 130px;
-    height: 180px;
-    border-radius: 8px;
-    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.8), inset 0 2px 0 rgba(255, 255, 255, 0.25);
-    transform-style: preserve-3d;
-    animation: cardFlip 1.0s cubic-bezier(0.16, 1, 0.3, 1);
+  .ov-ref-img {
+    width: clamp(220px, 30vw, 340px);
+    height: auto;
+    filter: drop-shadow(0 20px 50px rgba(0, 0, 0, 0.8));
+    animation: refRise 1.0s cubic-bezier(0.16, 1, 0.3, 1);
   }
-  .ov-card-img.yellow {
-    background: linear-gradient(135deg, #fde047 0%, #facc15 60%, #ca8a04 100%);
-    border: 1px solid #92400e;
+  .overlay.o-red .ov-ref-img {
+    filter: drop-shadow(0 20px 60px rgba(220, 38, 38, 0.55));
   }
-  .ov-card-img.red {
-    background: linear-gradient(135deg, #ef4444 0%, #dc2626 60%, #7f1d1d 100%);
-    border: 1px solid #450a0a;
-  }
-  @keyframes cardFlip {
-    0%   { transform: perspective(600px) rotateY(-90deg) scale(0.6); opacity: 0; }
-    50%  { transform: perspective(600px) rotateY(20deg) scale(1.15); opacity: 1; }
-    100% { transform: perspective(600px) rotateY(0deg) scale(1); opacity: 1; }
+  @keyframes refRise {
+    0%   { transform: scale(0.6) translateY(40px); opacity: 0; }
+    60%  { transform: scale(1.05) translateY(0); opacity: 1; }
+    100% { transform: scale(1) translateY(0); opacity: 1; }
   }
   .ov-card-text {
     font-size: 48px;
