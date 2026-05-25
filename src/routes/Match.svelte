@@ -9,6 +9,14 @@
   const store = careerStore()
   let career = $derived(store.career)
 
+  type OverlayKind = 'goal' | 'yellow' | 'red' | 'half_time' | 'full_time' | 'kickoff'
+  interface OverlayPayload {
+    kind: OverlayKind
+    side?: 'home' | 'away' | null
+    playerName?: string
+    teamName?: string
+  }
+
   let myFixture = $state<Fixture | null>(null)
   let result = $state<MatchResult | null>(null)
   let shown = $state<MatchEvent[]>([])
@@ -18,21 +26,39 @@
   let minute = $state(0)
   let playing = $state(true)
   let finished = $state(false)
-  let speed = $state(1)  // 1, 2, 5
+  let speed = $state(1)  // 0.5, 1, 2, 4
   let goalFlash = $state(false)
+  let overlay = $state<OverlayPayload | null>(null)
   let errorMsg = $state<string | null>(null)
   let streamEl: HTMLDivElement | undefined = $state()
   let timer: ReturnType<typeof setTimeout> | null = null
-
-  // Velocità: ms per evento (tipico match ~250-400 eventi)
-  $effect(() => {
-    // Forza re-trigger se speed cambia ma il loop è già attivo
-    void speed
-  })
+  let overlayTimer: ReturnType<typeof setTimeout> | null = null
 
   function eventDelay(): number {
-    const baseMs = 220
-    return Math.max(40, baseMs / speed)
+    // Default 1000ms/evento (godibile); 0.5x = lento, 2x/4x = veloce
+    const baseMs = 1000
+    return Math.max(80, baseMs / speed)
+  }
+
+  // Durata overlay drammatici (NEUTRA rispetto a speed: la "pausa narrativa" è fissa)
+  const OVERLAY_MS: Record<OverlayKind, number> = {
+    goal: 3500,
+    yellow: 1800,
+    red: 2500,
+    half_time: 2500,
+    full_time: 2800,
+    kickoff: 1600,
+  }
+
+  function nameOf(playerId?: string): string {
+    if (!playerId || !career) return ''
+    const p = career.players[playerId]
+    if (!p) return ''
+    return `${p.firstName} ${p.lastName}`
+  }
+  function teamOfSide(side: 'home' | 'away' | null | undefined): string {
+    if (!myFixture || !side) return ''
+    return teamName(side === 'home' ? myFixture.homeId : myFixture.awayId)
   }
 
   onMount(async () => {
@@ -59,10 +85,39 @@
 
   onDestroy(() => {
     if (timer) { clearTimeout(timer); timer = null }
+    if (overlayTimer) { clearTimeout(overlayTimer); overlayTimer = null }
   })
+
+  function maybeOpenOverlay(ev: MatchEvent): boolean {
+    let payload: OverlayPayload | null = null
+    if (ev.kind === 'goal') {
+      payload = { kind: 'goal', side: ev.side, playerName: nameOf(ev.playerId), teamName: teamOfSide(ev.side) }
+    } else if (ev.kind === 'yellow_card') {
+      payload = { kind: 'yellow', side: ev.side, playerName: nameOf(ev.playerId), teamName: teamOfSide(ev.side) }
+    } else if (ev.kind === 'red_card') {
+      payload = { kind: 'red', side: ev.side, playerName: nameOf(ev.playerId), teamName: teamOfSide(ev.side) }
+    } else if (ev.kind === 'half_time') {
+      payload = { kind: 'half_time' }
+    } else if (ev.kind === 'full_time') {
+      payload = { kind: 'full_time' }
+    } else if (ev.kind === 'kickoff' && minute === 0) {
+      payload = { kind: 'kickoff' }
+    }
+    if (!payload) return false
+    overlay = payload
+    const ms = OVERLAY_MS[payload.kind]
+    overlayTimer = setTimeout(() => {
+      overlay = null
+      overlayTimer = null
+      if (playing && !finished) tickReplay()
+    }, ms)
+    return true
+  }
 
   function tickReplay() {
     if (!result || !playing) return
+    // Se c'è un overlay attivo, attendi che si chiuda (sarà lui a richiamarci)
+    if (overlay) return
     if (currentIdx >= result.events.length) {
       finished = true
       playing = false
@@ -79,6 +134,8 @@
       setTimeout(() => goalFlash = false, 800)
     }
     autoscroll()
+    // Overlay drammatico: blocca il tick finché non si chiude
+    if (maybeOpenOverlay(ev)) return
     timer = setTimeout(tickReplay, eventDelay())
   }
 
@@ -97,6 +154,8 @@
   function skipToEnd() {
     if (!result) return
     if (timer) { clearTimeout(timer); timer = null }
+    if (overlayTimer) { clearTimeout(overlayTimer); overlayTimer = null }
+    overlay = null
     // Applica tutti gli eventi rimanenti
     for (let i = currentIdx; i < result.events.length; i++) {
       const ev = result.events[i]
@@ -184,6 +243,39 @@
       </div>
     </header>
 
+    {#if overlay}
+      <div class="overlay" class:o-goal={overlay.kind === 'goal'} class:o-card={overlay.kind === 'yellow' || overlay.kind === 'red'} class:o-red={overlay.kind === 'red'} class:o-break={overlay.kind === 'half_time' || overlay.kind === 'full_time' || overlay.kind === 'kickoff'}>
+        {#if overlay.kind === 'goal'}
+          <div class="ov-ball">⚽</div>
+          <div class="ov-goal-text">GOOOOOL!</div>
+          {#if overlay.playerName}
+            <div class="ov-scorer">{overlay.playerName}</div>
+          {/if}
+          {#if overlay.teamName}
+            <div class="ov-team">{overlay.teamName}</div>
+          {/if}
+          <div class="ov-score">{homeScore} – {awayScore}</div>
+        {:else if overlay.kind === 'yellow'}
+          <div class="ov-card-img yellow"></div>
+          <div class="ov-card-text">AMMONIZIONE</div>
+          {#if overlay.playerName}<div class="ov-player">{overlay.playerName}</div>{/if}
+        {:else if overlay.kind === 'red'}
+          <div class="ov-card-img red"></div>
+          <div class="ov-card-text big">ESPULSIONE!</div>
+          {#if overlay.playerName}<div class="ov-player">{overlay.playerName}</div>{/if}
+        {:else if overlay.kind === 'kickoff'}
+          <div class="ov-break-text">FISCHIO D'INIZIO</div>
+          <div class="ov-break-sub">{teamName(myFixture.homeId)} · {teamName(myFixture.awayId)}</div>
+        {:else if overlay.kind === 'half_time'}
+          <div class="ov-break-text">FINE PRIMO TEMPO</div>
+          <div class="ov-break-sub">{homeScore} – {awayScore}</div>
+        {:else if overlay.kind === 'full_time'}
+          <div class="ov-break-text">FINE PARTITA</div>
+          <div class="ov-break-sub">{homeScore} – {awayScore}</div>
+        {/if}
+      </div>
+    {/if}
+
     <main class="stream-wrap">
       <div class="stream card-gold" bind:this={streamEl}>
         {#each shown as ev, i (i)}
@@ -236,7 +328,7 @@
         <button class="ctrl" onclick={togglePause}>{playing ? '⏸ Pausa' : '▶ Riprendi'}</button>
         <div class="speed">
           <span class="speed-l">Velocità</span>
-          {#each [1, 2, 5] as s}
+          {#each [0.5, 1, 2, 4] as s}
             <button class="speed-btn" class:active={speed === s} onclick={() => setSpeed(s)}>{s}x</button>
           {/each}
         </div>
@@ -522,6 +614,170 @@
     border-radius: 8px;
   }
 
+  /* ========== OVERLAY DRAMMATICI ========== */
+  .overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 100;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 14px;
+    background: radial-gradient(ellipse at center, rgba(0, 0, 0, 0.85) 30%, rgba(0, 0, 0, 0.98) 100%);
+    backdrop-filter: blur(8px);
+    color: #fef3c7;
+    animation: overlayFadeIn 0.25s ease-out;
+  }
+  @keyframes overlayFadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+
+  /* --- GOAL --- */
+  .overlay.o-goal {
+    background:
+      radial-gradient(ellipse 80% 60% at 50% 50%, rgba(245, 158, 11, 0.35), transparent 60%),
+      radial-gradient(ellipse at center, rgba(0, 0, 0, 0.90) 40%, rgba(0, 0, 0, 0.98) 100%);
+  }
+  .ov-ball {
+    font-size: 140px;
+    line-height: 1;
+    filter: drop-shadow(0 10px 40px rgba(245, 158, 11, 0.6));
+    animation: ballBounce 1.6s cubic-bezier(0.34, 1.56, 0.64, 1);
+    transform-origin: center;
+  }
+  @keyframes ballBounce {
+    0%   { transform: scale(0) rotate(0deg); opacity: 0; }
+    35%  { transform: scale(1.4) rotate(360deg); opacity: 1; }
+    55%  { transform: scale(0.9) rotate(540deg); }
+    75%  { transform: scale(1.1) rotate(680deg); }
+    100% { transform: scale(1) rotate(720deg); opacity: 1; }
+  }
+  .ov-goal-text {
+    font-size: clamp(64px, 12vw, 140px);
+    font-weight: 900;
+    letter-spacing: 0.02em;
+    background: linear-gradient(180deg, #fef3c7 0%, #fcd34d 30%, #f59e0b 60%, #b45309 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    color: transparent;
+    filter: drop-shadow(0 8px 50px rgba(245, 158, 11, 0.65));
+    animation: bigZoom 0.6s cubic-bezier(0.16, 1, 0.3, 1);
+    text-align: center;
+    line-height: 1;
+  }
+  @keyframes bigZoom {
+    0%   { transform: scale(0.4); opacity: 0; }
+    60%  { transform: scale(1.08); opacity: 1; }
+    100% { transform: scale(1); opacity: 1; }
+  }
+  .ov-scorer {
+    font-size: 28px;
+    font-weight: 800;
+    color: #fef3c7;
+    margin-top: 6px;
+    animation: fadeUp 0.5s 0.4s both;
+  }
+  .ov-team {
+    font-size: 14px;
+    color: #fcd34d;
+    text-transform: uppercase;
+    letter-spacing: 0.2em;
+    animation: fadeUp 0.5s 0.55s both;
+  }
+  .ov-score {
+    margin-top: 18px;
+    font-size: 40px;
+    font-weight: 900;
+    color: #fde68a;
+    padding: 8px 28px;
+    border: 1px solid rgba(252, 211, 77, 0.4);
+    border-radius: 12px;
+    background: rgba(0, 0, 0, 0.5);
+    font-variant-numeric: tabular-nums;
+    animation: fadeUp 0.5s 0.7s both;
+  }
+  @keyframes fadeUp {
+    from { opacity: 0; transform: translateY(20px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  /* --- CARTELLINI --- */
+  .overlay.o-card { gap: 18px; }
+  .overlay.o-red {
+    animation: overlayFadeIn 0.25s ease-out, shakeIt 0.5s 0.4s ease-in-out 2;
+  }
+  @keyframes shakeIt {
+    0%, 100% { transform: translateX(0); }
+    25%      { transform: translateX(-8px); }
+    50%      { transform: translateX(8px); }
+    75%      { transform: translateX(-5px); }
+  }
+  .ov-card-img {
+    width: 130px;
+    height: 180px;
+    border-radius: 8px;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.8), inset 0 2px 0 rgba(255, 255, 255, 0.25);
+    transform-style: preserve-3d;
+    animation: cardFlip 1.0s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+  .ov-card-img.yellow {
+    background: linear-gradient(135deg, #fde047 0%, #facc15 60%, #ca8a04 100%);
+    border: 1px solid #92400e;
+  }
+  .ov-card-img.red {
+    background: linear-gradient(135deg, #ef4444 0%, #dc2626 60%, #7f1d1d 100%);
+    border: 1px solid #450a0a;
+  }
+  @keyframes cardFlip {
+    0%   { transform: perspective(600px) rotateY(-90deg) scale(0.6); opacity: 0; }
+    50%  { transform: perspective(600px) rotateY(20deg) scale(1.15); opacity: 1; }
+    100% { transform: perspective(600px) rotateY(0deg) scale(1); opacity: 1; }
+  }
+  .ov-card-text {
+    font-size: 48px;
+    font-weight: 900;
+    letter-spacing: 0.1em;
+    color: #fcd34d;
+    animation: fadeUp 0.5s 0.3s both;
+  }
+  .ov-card-text.big {
+    font-size: 60px;
+    color: #fca5a5;
+    text-shadow: 0 4px 24px rgba(220, 38, 38, 0.6);
+  }
+  .ov-player {
+    font-size: 22px;
+    font-weight: 700;
+    color: #fef3c7;
+    animation: fadeUp 0.5s 0.5s both;
+  }
+
+  /* --- BREAK (KICKOFF / HALFTIME / FULLTIME) --- */
+  .overlay.o-break .ov-break-text {
+    font-size: clamp(40px, 7vw, 90px);
+    font-weight: 900;
+    letter-spacing: 0.08em;
+    background: linear-gradient(180deg, #fef3c7 0%, #fcd34d 50%, #b45309 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    color: transparent;
+    filter: drop-shadow(0 6px 40px rgba(245, 158, 11, 0.5));
+    text-align: center;
+    animation: bigZoom 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+  .ov-break-sub {
+    margin-top: 12px;
+    font-size: 22px;
+    color: #d4cfc1;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    animation: fadeUp 0.5s 0.3s both;
+  }
+
   @media (max-width: 900px) {
     .stream-wrap { grid-template-columns: 1fr; }
     .side-stats { order: -1; }
@@ -529,5 +785,8 @@
     .score-big { font-size: 44px; }
     .controls { gap: 8px; }
     .ctrl.skip { margin-left: 0; }
+    .ov-ball { font-size: 100px; }
+    .ov-card-img { width: 100px; height: 140px; }
+    .ov-card-text { font-size: 36px; }
   }
 </style>
