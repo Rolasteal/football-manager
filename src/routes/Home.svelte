@@ -1,7 +1,8 @@
 <script lang="ts">
   import { push } from 'svelte-spa-router'
   import { onMount, onDestroy } from 'svelte'
-  import { hasAnySave } from '$storage/db'
+  import { hasAnySave, listCareers } from '$storage/db'
+  import { loadActiveCareer } from '$state/career.svelte'
 
   type RectHitbox = {
     id: string
@@ -37,9 +38,13 @@
 
   function startNew() { push('/new-career') }
   function openSettings() { push('/settings') }
-  function continueGame() {
+  async function continueGame() {
     if (!hasSave) return
-    push('/dashboard')
+    const careers = await listCareers()
+    const last = careers[0]
+    if (!last) return
+    const c = await loadActiveCareer(last.id)
+    if (c) push('/dashboard')
   }
 
   // ====== Hitbox definitions (valori di default) ======
