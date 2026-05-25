@@ -61,6 +61,31 @@ export const TPL = {
     '🟥 ROSSO per {p}! Espulso!',
     '🟥 {p} viene cacciato dal campo!',
   ],
+  red_card_second_yellow: [
+    '🟨🟥 Secondo giallo per {p}: espulso!',
+    '🟨🟥 {p} doppia ammonizione, deve lasciare il campo.',
+    '🟨🟥 Doppio giallo per {p}: fuori, {t} in dieci!',
+  ],
+  penalty_awarded: [
+    '⚖️ RIGORE! L\'arbitro indica il dischetto: fallo su {p2}!',
+    '⚖️ Calcio di rigore! Atterrato {p2} in area, niente da fare per {p}.',
+    '⚖️ L\'arbitro fischia: è rigore per {t}!',
+  ],
+  penalty_goal: [
+    '⚽ {p} dal dischetto: rete! Gol al {min}\'!',
+    '⚽ Glaciale {p}: trasforma il rigore al {min}\'!',
+    '⚽ {p} non sbaglia dagli undici metri: gol al {min}\'!',
+  ],
+  penalty_saved: [
+    '🧤 PARATA! {p2} ipnotizza {p} dal dischetto!',
+    '🧤 Che paratona di {p2}: rigore neutralizzato!',
+    '🧤 {p} se lo fa parare: bravo {p2}!',
+  ],
+  penalty_missed: [
+    '😱 {p} sbaglia il rigore: pallone fuori!',
+    '😱 Disastro {p}: spreca il rigore al {min}\'!',
+    '😱 Tiro alle stelle di {p}: rigore sbagliato!',
+  ],
   foul: [
     'Fallo di {p} su {p2}.',
     'Intervento falloso di {p}.',

@@ -142,6 +142,10 @@ export function simulateMatch(opts: SimulateMatchOptions): MatchResult {
   const stats: MatchStats = { home: emptyStats(), away: emptyStats() }
   const scorers: Scorer[] = []
   const ratings: Record<EntityId, number> = {}
+  /** Conteggio gialli per playerId — secondo giallo = espulsione automatica */
+  const yellowCounts: Record<EntityId, number> = {}
+  /** Set giocatori già espulsi (skip eventi successivi per loro) */
+  const sentOff = new Set<EntityId>()
   // Init ratings 6.0 per tutti
   for (const p of [...homePlayers, ...awayPlayers]) ratings[p.id] = 6.0
 
@@ -255,6 +259,94 @@ export function simulateMatch(opts: SimulateMatchOptions): MatchResult {
     }
   }
 
+  /**
+   * Esegue un rigore: emette evento 'penalty' (assegnazione) + esito.
+   * Esito: gol 75%, parato 15%, sbagliato 10% (statistiche reali ~ Serie A).
+   */
+  function tryPenalty(attSide: TeamSide, defSide: TeamSide, min: number, fouler: Player, fouled: Player) {
+    const attStats = attSide.side === 'home' ? stats.home : stats.away
+    // 1. Emit "rigore assegnato"
+    events.push({
+      minute: min, second: rng.int(0, 5), kind: 'penalty',
+      side: attSide.side, playerId: fouled.id, secondaryPlayerId: fouler.id,
+      ballPosition: ballAt(attSide.side, { x: 0.88, y: 0.5 }, rng),
+      commentary: tpl(rng, 'penalty_awarded', { p: shortName(fouler), p2: shortName(fouled), t: attSide.team.name }),
+    })
+
+    // 2. Sceglie esecutore — miglior finisher in campo (escludendo espulsi)
+    const onPitch = attSide.players.filter(p => !sentOff.has(p.id))
+    const taker = [...onPitch].sort((a, b) => b.attributes.finishing - a.attributes.finishing)[0]
+    const gk = defSide.players.find(p => p.position === 'GK' && !sentOff.has(p.id))
+    if (!taker) return
+
+    // 3. Esito
+    const roll = rng.next()
+    const sec = rng.int(20, 50)
+    attStats.shots++
+    if (roll < 0.75) {
+      // GOAL
+      attStats.shotsOnTarget++
+      events.push({
+        minute: min, second: sec, kind: 'goal',
+        side: attSide.side, playerId: taker.id,
+        ballPosition: ballAt(attSide.side, { x: 0.95, y: 0.5 }, rng),
+        commentary: tpl(rng, 'penalty_goal', { p: shortName(taker), min }),
+      })
+      if (attSide.side === 'home') homeScore++; else awayScore++
+      scorers.push({ playerId: taker.id, teamId: attSide.team.id, minute: min, note: 'rigore' })
+      ratings[taker.id] = clamp((ratings[taker.id] ?? 6) + 1.0, 1, 10)
+    } else if (roll < 0.90) {
+      // SAVED (paratona del portiere)
+      attStats.shotsOnTarget++
+      events.push({
+        minute: min, second: sec, kind: 'save',
+        side: defSide.side, playerId: gk?.id, secondaryPlayerId: taker.id,
+        ballPosition: ballAt(defSide.side, { x: 0.05, y: 0.5 }, rng),
+        commentary: tpl(rng, 'penalty_saved', { p: shortName(taker), p2: gk ? shortName(gk) : 'il portiere' }),
+      })
+      if (gk) ratings[gk.id] = clamp((ratings[gk.id] ?? 6) + 0.8, 1, 10)
+      ratings[taker.id] = clamp((ratings[taker.id] ?? 6) - 0.3, 1, 10)
+    } else {
+      // MISSED (alto/largo)
+      events.push({
+        minute: min, second: sec, kind: 'shot',
+        side: attSide.side, playerId: taker.id,
+        ballPosition: ballAt(attSide.side, { x: 0.99, y: 0.5 }, rng),
+        commentary: tpl(rng, 'penalty_missed', { p: shortName(taker), min }),
+      })
+      ratings[taker.id] = clamp((ratings[taker.id] ?? 6) - 0.5, 1, 10)
+    }
+  }
+
+  /**
+   * Emette un cartellino giallo per il giocatore dato. Se è il SECONDO
+   * giallo della partita, emette automaticamente anche il rosso.
+   */
+  function emitYellow(card: Player, defendingSide: TeamSide, min: number) {
+    events.push({
+      minute: min, second: rng.int(0, 59), kind: 'yellow_card',
+      side: defendingSide.side, playerId: card.id,
+      ballPosition: ballAt(defendingSide.side, ZONE_MID, rng),
+      commentary: tpl(rng, 'yellow_card', { p: shortName(card) }),
+    })
+    if (defendingSide.side === 'home') stats.home.yellowCards++; else stats.away.yellowCards++
+    ratings[card.id] = clamp((ratings[card.id] ?? 6) - 0.15, 1, 10)
+
+    yellowCounts[card.id] = (yellowCounts[card.id] ?? 0) + 1
+    if (yellowCounts[card.id] >= 2 && !sentOff.has(card.id)) {
+      // Secondo giallo → espulsione
+      sentOff.add(card.id)
+      events.push({
+        minute: min, second: rng.int(0, 59), kind: 'red_card',
+        side: defendingSide.side, playerId: card.id,
+        ballPosition: ballAt(defendingSide.side, ZONE_MID, rng),
+        commentary: tpl(rng, 'red_card_second_yellow', { p: shortName(card), t: defendingSide.team.name }),
+      })
+      if (defendingSide.side === 'home') stats.home.redCards++; else stats.away.redCards++
+      ratings[card.id] = clamp((ratings[card.id] ?? 6) - 0.6, 1, 10)
+    }
+  }
+
   function tryMinorEvent(min: number) {
     // 30% prob filler, 25% fallo, 15% corner, 15% punizione, 10% giallo, 5% sub (solo dopo 60')
     const r = rng.next()
@@ -269,17 +361,22 @@ export function simulateMatch(opts: SimulateMatchOptions): MatchResult {
         commentary: tpl(rng, 'filler', { t: attackingSide.team.name }),
       })
     } else if (r < 0.55) {
-      // Fallo
+      // Fallo — ~7% probabilità che sia in area di rigore
       const fouler = pickRoleWeighted(rng, defendingSide.players, ['DEF', 'MID'])
       const fouled = pickRoleWeighted(rng, attackingSide.players, ['ATT', 'MID'])
-      events.push({
-        minute: min, second: rng.int(0, 59), kind: 'foul',
-        side: defendingSide.side, playerId: fouler.id, secondaryPlayerId: fouled.id,
-        ballPosition: ballAt(defendingSide.side, ZONE_MID, rng),
-        commentary: tpl(rng, 'foul', { p: shortName(fouler), p2: shortName(fouled) }),
-      })
       if (defendingSide.side === 'home') stats.home.fouls++; else stats.away.fouls++
       ratings[fouler.id] = clamp((ratings[fouler.id] ?? 6) - 0.05, 1, 10)
+      if (rng.chance(0.07)) {
+        // Rigore!
+        tryPenalty(attackingSide, defendingSide, min, fouler, fouled)
+      } else {
+        events.push({
+          minute: min, second: rng.int(0, 59), kind: 'foul',
+          side: defendingSide.side, playerId: fouler.id, secondaryPlayerId: fouled.id,
+          ballPosition: ballAt(defendingSide.side, ZONE_MID, rng),
+          commentary: tpl(rng, 'foul', { p: shortName(fouler), p2: shortName(fouled) }),
+        })
+      }
     } else if (r < 0.70) {
       // Corner
       events.push({
@@ -298,16 +395,11 @@ export function simulateMatch(opts: SimulateMatchOptions): MatchResult {
         commentary: tpl(rng, 'free_kick', { t: attackingSide.team.name }),
       })
     } else if (r < 0.95) {
-      // Cartellino giallo (legato a fallo precedente, ma per semplicità eventizziamo a parte)
-      const card = pickRoleWeighted(rng, defendingSide.players, ['DEF', 'MID'])
-      events.push({
-        minute: min, second: rng.int(0, 59), kind: 'yellow_card',
-        side: defendingSide.side, playerId: card.id,
-        ballPosition: ballAt(defendingSide.side, ZONE_MID, rng),
-        commentary: tpl(rng, 'yellow_card', { p: shortName(card) }),
-      })
-      if (defendingSide.side === 'home') stats.home.yellowCards++; else stats.away.yellowCards++
-      ratings[card.id] = clamp((ratings[card.id] ?? 6) - 0.15, 1, 10)
+      // Cartellino giallo (esclude già espulsi); il secondo giallo
+      // viene gestito da emitYellow() che emette anche il rosso.
+      const pool = defendingSide.players.filter(p => !sentOff.has(p.id))
+      const card = pickRoleWeighted(rng, pool.length ? pool : defendingSide.players, ['DEF', 'MID'])
+      if (!sentOff.has(card.id)) emitYellow(card, defendingSide, min)
     } else if (min >= 60) {
       // Sostituzione (semplificata: random)
       const outP = attackingSide.players[Math.floor(rng.next() * attackingSide.players.length)]

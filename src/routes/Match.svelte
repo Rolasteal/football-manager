@@ -11,12 +11,17 @@
   const store = careerStore()
   let career = $derived(store.career)
 
-  type OverlayKind = 'goal' | 'yellow' | 'red' | 'half_time' | 'full_time' | 'kickoff' | 'second_half'
+  type OverlayKind = 'goal' | 'yellow' | 'red' | 'half_time' | 'full_time' | 'kickoff' | 'second_half' | 'penalty' | 'mvp'
   interface OverlayPayload {
     kind: OverlayKind
     side?: 'home' | 'away' | null
     playerName?: string
     teamName?: string
+    // MVP fields
+    mvpId?: EntityId
+    mvpRating?: number
+    mvpBonus?: number
+    mvpTotal?: number
   }
 
   let myFixture = $state<Fixture | null>(null)
@@ -97,10 +102,12 @@
     full_time: 4500,
     kickoff: 3000,
     second_half: 3000,
+    penalty: 2600,
+    mvp: 6500,
   }
 
   // Pre-evento "suspense": qualcosa sta per accadere
-  type SuspenseKind = 'goal' | 'yellow' | 'red'
+  type SuspenseKind = 'goal' | 'yellow' | 'red' | 'penalty'
   let suspense = $state<SuspenseKind | null>(null)
   let suspenseTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -108,12 +115,14 @@
     goal: 2000,
     yellow: 1400,
     red: 1900,
+    penalty: 2200,
   }
 
   function suspenseKindOf(ev: MatchEvent): SuspenseKind | null {
     if (ev.kind === 'goal') return 'goal'
     if (ev.kind === 'yellow_card') return 'yellow'
     if (ev.kind === 'red_card') return 'red'
+    if (ev.kind === 'penalty') return 'penalty'
     return null
   }
 
@@ -193,6 +202,87 @@
     return v.toFixed(1)
   }
 
+  // ====== FANTA-BONUS (separato dal voto base) ======
+  // Roberto's spec:
+  //   +3 gol segnato,  -3 rigore sbagliato,  -1 espulsione,
+  //   -0.5 giallo,  +3 GK para rigore,  -1 GK gol subito.
+  function gkOfTeam(teamId: EntityId | undefined): EntityId | undefined {
+    if (!career || !teamId) return undefined
+    return Object.values(career.players).find(p => p.teamId === teamId && p.position === 'GK')?.id
+  }
+  let homeGkId = $derived(gkOfTeam(myFixture?.homeId))
+  let awayGkId = $derived(gkOfTeam(myFixture?.awayId))
+
+  function computeFantaBonus(events: MatchEvent[]): Record<EntityId, number> {
+    const r: Record<EntityId, number> = {}
+    const adj = (id: EntityId | undefined, delta: number) => {
+      if (!id) return
+      r[id] = (r[id] ?? 0) + delta
+    }
+    for (let i = 0; i < events.length; i++) {
+      const ev = events[i]
+      if (ev.kind === 'goal') {
+        adj(ev.playerId, +3)
+        // -1 al portiere avversario per gol subito
+        adj(ev.side === 'home' ? awayGkId : homeGkId, -1)
+      } else if (ev.kind === 'yellow_card') {
+        adj(ev.playerId, -0.5)
+      } else if (ev.kind === 'red_card') {
+        adj(ev.playerId, -1)
+      } else if (ev.kind === 'penalty') {
+        // Esito del rigore: cerca nei prossimi eventi
+        for (let j = i + 1; j < Math.min(i + 5, events.length); j++) {
+          const next = events[j]
+          if (next.minute !== ev.minute) break
+          if (next.kind === 'save' && next.side !== ev.side) {
+            // Parato: GK +3, taker -3
+            adj(next.playerId, +3)
+            adj(next.secondaryPlayerId, -3)
+            break
+          }
+          if (next.kind === 'shot' && next.side === ev.side) {
+            // Sbagliato (fuori): taker -3
+            adj(next.playerId, -3)
+            break
+          }
+          if (next.kind === 'goal' && next.side === ev.side) {
+            // Segnato — il +3 è già stato applicato dal goal handler sopra
+            break
+          }
+        }
+      }
+    }
+    return r
+  }
+
+  let fantaBonus = $derived(computeFantaBonus(shown))
+
+  function bonusOf(id: EntityId): number {
+    return fantaBonus[id] ?? 0
+  }
+  function totalOf(id: EntityId): number {
+    return rating(id) + bonusOf(id)
+  }
+  function fmtBonus(v: number): string {
+    if (v === 0) return ''
+    return v > 0 ? `+${v.toFixed(1).replace(/\.0$/, '')}` : v.toFixed(1).replace(/\.0$/, '')
+  }
+
+  // ====== MVP (miglior fanta-punteggio tra tutti i 22 titolari) ======
+  function computeMvp(): { id: EntityId; rating: number; bonus: number; total: number; side: 'home' | 'away' } | null {
+    if (!homeLineup || !awayLineup) return null
+    let best: { id: EntityId; rating: number; bonus: number; total: number; side: 'home' | 'away' } | null = null
+    const consider = (id: EntityId, side: 'home' | 'away') => {
+      const rt = rating(id)
+      const bn = bonusOf(id)
+      const tt = rt + bn
+      if (!best || tt > best.total) best = { id, rating: rt, bonus: bn, total: tt, side }
+    }
+    for (const id of homeLineup.starters) consider(id, 'home')
+    for (const id of awayLineup.starters) consider(id, 'away')
+    return best
+  }
+
   onMount(async () => {
     if (!career) { push('/'); return }
     // Preload asset overlay per evitare lag al primo trigger
@@ -204,6 +294,7 @@
       '/assets/match/Fine_primo_tempo.png',
       '/assets/match/Inizio_secondo_tempo.png',
       '/assets/match/Fine_partita.png',
+      '/assets/match/Mvp.png',
     ]
     for (const src of PRELOAD) {
       const img = new Image()
@@ -258,6 +349,8 @@
       payload = { kind: 'yellow', side: ev.side, playerName: nameOf(ev.playerId), teamName: teamOfSide(ev.side) }
     } else if (ev.kind === 'red_card') {
       payload = { kind: 'red', side: ev.side, playerName: nameOf(ev.playerId), teamName: teamOfSide(ev.side) }
+    } else if (ev.kind === 'penalty') {
+      payload = { kind: 'penalty', side: ev.side, playerName: nameOf(ev.playerId), teamName: teamOfSide(ev.side) }
     } else if (ev.kind === 'half_time') {
       payload = { kind: 'half_time' }
     } else if (ev.kind === 'full_time') {
@@ -282,6 +375,23 @@
    * Tick principale: avvia il cronometro animato da clockSec fino al
    * minuto:second del prossimo evento, e dopo eventDelay() lo consuma.
    */
+  function triggerMvpOverlay() {
+    const m = computeMvp()
+    if (!m) return
+    overlay = {
+      kind: 'mvp',
+      side: m.side,
+      mvpId: m.id,
+      mvpRating: m.rating,
+      mvpBonus: m.bonus,
+      mvpTotal: m.total,
+    }
+    overlayTimer = setTimeout(() => {
+      overlay = null
+      overlayTimer = null
+    }, OVERLAY_MS.mvp)
+  }
+
   function tickReplay() {
     if (!result || !playing) return
     if (overlay || suspense) return  // blocchi attivi: aspetta che si liberino
@@ -289,6 +399,7 @@
       stopClockAnim()
       finished = true
       playing = false
+      triggerMvpOverlay()
       return
     }
     const ev = result.events[currentIdx]
@@ -334,6 +445,11 @@
   async function autoscroll() {
     await tick()
     if (streamEl) streamEl.scrollTop = streamEl.scrollHeight
+    // Doppio frame per sicurezza: il primo applica il DOM, il secondo
+    // garantisce che scroll-position sia aggiornata dopo layout.
+    requestAnimationFrame(() => {
+      if (streamEl) streamEl.scrollTop = streamEl.scrollHeight
+    })
   }
 
   function togglePause() {
@@ -369,6 +485,7 @@
     finished = true
     playing = false
     autoscroll()
+    triggerMvpOverlay()
   }
 
   function setSpeed(s: number) {
@@ -444,12 +561,13 @@
     </header>
 
     {#if suspense}
-      <div class="suspense" class:s-red={suspense === 'red'} class:s-goal={suspense === 'goal'}>
+      <div class="suspense" class:s-red={suspense === 'red'} class:s-goal={suspense === 'goal'} class:s-pen={suspense === 'penalty'}>
         <div class="susp-pulse"></div>
         <div class="susp-text">
           {#if suspense === 'goal'}OCCASIONE…{/if}
           {#if suspense === 'yellow'}FALLO PERICOLOSO…{/if}
           {#if suspense === 'red'}INTERVENTO DURO…{/if}
+          {#if suspense === 'penalty'}CONTATTO IN AREA…{/if}
         </div>
       </div>
     {/if}
@@ -460,6 +578,8 @@
         class:o-goal={overlay.kind === 'goal'}
         class:o-card={overlay.kind === 'yellow' || overlay.kind === 'red'}
         class:o-red={overlay.kind === 'red'}
+        class:o-pen={overlay.kind === 'penalty'}
+        class:o-mvp={overlay.kind === 'mvp'}
         class:o-break={overlay.kind === 'half_time' || overlay.kind === 'full_time' || overlay.kind === 'kickoff' || overlay.kind === 'second_half'}
       >
         {#if overlay.kind === 'goal'}
@@ -492,6 +612,34 @@
         {:else if overlay.kind === 'full_time'}
           <img class="ov-break-img" src="/assets/match/Fine_partita.png" alt="Fine partita" />
           <div class="ov-break-sub">Risultato finale: <strong>{homeScore} – {awayScore}</strong></div>
+        {:else if overlay.kind === 'penalty'}
+          <div class="ov-pen-badge">⚖️</div>
+          <div class="ov-pen-text">RIGORE!</div>
+          {#if overlay.teamName}
+            <div class="ov-pen-sub">per il <strong>{overlay.teamName}</strong></div>
+          {/if}
+        {:else if overlay.kind === 'mvp'}
+          <img class="ov-break-img" src="/assets/match/Mvp.png" alt="MVP" />
+          {#if overlay.mvpId}
+            <div class="ov-mvp-info">
+              <div class="ov-mvp-name">{lastNameOf(overlay.mvpId)}</div>
+              <div class="ov-mvp-team">{teamName(overlay.side === 'home' ? myFixture.homeId : myFixture.awayId)}</div>
+              <div class="ov-mvp-stats">
+                <div class="mv-cell">
+                  <span class="mv-l">Voto</span>
+                  <span class="mv-v">{(overlay.mvpRating ?? 6).toFixed(1)}</span>
+                </div>
+                <div class="mv-cell">
+                  <span class="mv-l">Bonus</span>
+                  <span class="mv-v" class:plus={(overlay.mvpBonus ?? 0) > 0} class:minus={(overlay.mvpBonus ?? 0) < 0}>{fmtBonus(overlay.mvpBonus ?? 0) || '—'}</span>
+                </div>
+                <div class="mv-cell mv-total">
+                  <span class="mv-l">Fanta-pt</span>
+                  <span class="mv-v">{(overlay.mvpTotal ?? 6).toFixed(1)}</span>
+                </div>
+              </div>
+            </div>
+          {/if}
         {/if}
       </div>
     {/if}
@@ -513,7 +661,10 @@
               {#each homeLineup.starters as pid (pid)}
                 <li class="lp-row">
                   <span class="shirt">{shirtOf(pid)}</span>
-                  <span class="pname">{lastNameOf(pid)}</span>
+                  <span class="pname">
+                    {lastNameOf(pid)}
+                    {#if bonusOf(pid) !== 0}<span class="bonus-chip" class:b-plus={bonusOf(pid) > 0}>{fmtBonus(bonusOf(pid))}</span>{/if}
+                  </span>
                   <span class="rate {ratingClass(rating(pid))}">{fmtRating(rating(pid))}</span>
                 </li>
               {/each}
@@ -626,11 +777,13 @@
 
 <style>
   .page {
-    min-height: 100vh;
+    height: 100vh;
+    max-height: 100vh;
     width: 100vw;
     color: #fef3c7;
     display: flex;
     flex-direction: column;
+    overflow: hidden;
     transition: background 0.3s;
   }
   .page.flash::after {
@@ -734,7 +887,7 @@
     display: flex;
     flex-direction: column;
     gap: 8px;
-    scroll-behavior: smooth;
+    min-height: 0;
   }
   .ev {
     display: flex;
@@ -928,6 +1081,15 @@
   .suspense.s-goal {
     border-color: rgba(252, 211, 77, 0.85);
     box-shadow: 0 10px 40px rgba(0, 0, 0, 0.7), 0 0 40px rgba(245, 158, 11, 0.45);
+  }
+  .suspense.s-pen {
+    border-color: rgba(220, 38, 38, 0.9);
+    color: #fecaca;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.7), 0 0 35px rgba(220, 38, 38, 0.5);
+  }
+  .suspense.s-pen .susp-pulse {
+    background: #ef4444;
+    box-shadow: 0 0 12px #ef4444;
   }
   @keyframes suspenseIn {
     from { opacity: 0; transform: translate(-50%, 14px); }
@@ -1128,16 +1290,163 @@
     font-variant-numeric: tabular-nums;
   }
 
+  /* --- PENALTY (assegnazione rigore) --- */
+  .overlay.o-pen {
+    background:
+      radial-gradient(ellipse 60% 60% at 50% 50%, rgba(220, 38, 38, 0.25), transparent 70%),
+      radial-gradient(ellipse at center, rgba(0, 0, 0, 0.92) 30%, rgba(0, 0, 0, 0.99) 100%);
+    gap: 10px;
+  }
+  .ov-pen-badge {
+    font-size: clamp(80px, 14vw, 160px);
+    filter: drop-shadow(0 12px 40px rgba(220, 38, 38, 0.55));
+    animation: penBadge 0.6s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+  @keyframes penBadge {
+    0%   { transform: scale(0.4) rotate(-15deg); opacity: 0; }
+    60%  { transform: scale(1.15) rotate(2deg); opacity: 1; }
+    100% { transform: scale(1) rotate(0); opacity: 1; }
+  }
+  .ov-pen-text {
+    font-size: clamp(56px, 10vw, 120px);
+    font-weight: 900;
+    letter-spacing: 0.08em;
+    color: #fca5a5;
+    text-shadow: 0 6px 24px rgba(220, 38, 38, 0.55);
+    animation: bigZoom 0.5s 0.1s both;
+    line-height: 1;
+  }
+  .ov-pen-sub {
+    font-size: 20px;
+    color: #fef3c7;
+    animation: fadeUp 0.5s 0.35s both;
+  }
+  .ov-pen-sub strong { color: #fcd34d; }
+
+  /* --- MVP --- */
+  .overlay.o-mvp {
+    padding: 0;
+    background: #000;
+    gap: 0;
+    position: relative;
+  }
+  .overlay.o-mvp .ov-break-img {
+    position: absolute;
+    inset: 0;
+    width: 100%; height: 100%;
+    object-fit: cover;
+    animation: breakImgIn 0.7s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+  .ov-mvp-info {
+    position: absolute;
+    bottom: 6%;
+    left: 50%;
+    transform: translateX(-50%);
+    width: min(640px, 92vw);
+    background: rgba(0, 0, 0, 0.82);
+    backdrop-filter: blur(10px);
+    border: 1px solid rgba(252, 211, 77, 0.55);
+    border-radius: 14px;
+    padding: 16px 22px;
+    text-align: center;
+    z-index: 2;
+    animation: fadeUp 0.5s 0.5s both;
+    box-shadow: 0 14px 50px rgba(0, 0, 0, 0.7), 0 0 35px rgba(245, 158, 11, 0.25);
+  }
+  .ov-mvp-name {
+    font-size: clamp(28px, 4vw, 42px);
+    font-weight: 900;
+    letter-spacing: 0.02em;
+    background: linear-gradient(180deg, #fef3c7 0%, #fcd34d 40%, #f59e0b 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    color: transparent;
+    line-height: 1;
+  }
+  .ov-mvp-team {
+    margin-top: 4px;
+    font-size: 12px;
+    color: #fcd34d;
+    text-transform: uppercase;
+    letter-spacing: 0.22em;
+    font-weight: 700;
+  }
+  .ov-mvp-stats {
+    margin-top: 14px;
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 10px;
+  }
+  .mv-cell {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 8px 4px;
+    background: rgba(255, 255, 255, 0.04);
+    border-radius: 8px;
+    border: 1px solid rgba(252, 211, 77, 0.15);
+  }
+  .mv-cell.mv-total {
+    background: linear-gradient(180deg, rgba(252, 211, 77, 0.25), rgba(245, 158, 11, 0.1));
+    border-color: rgba(252, 211, 77, 0.55);
+  }
+  .mv-l {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.18em;
+    color: #918778;
+    font-weight: 700;
+  }
+  .mv-v {
+    font-size: 22px;
+    font-weight: 900;
+    color: #fef3c7;
+    font-variant-numeric: tabular-nums;
+  }
+  .mv-v.plus { color: #6ee7b7; }
+  .mv-v.minus { color: #fca5a5; }
+  .mv-cell.mv-total .mv-v {
+    background: linear-gradient(180deg, #fef3c7, #fcd34d);
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    color: transparent;
+  }
+
+  /* Bonus chip inline accanto al nome nel pannello formazioni */
+  .bonus-chip {
+    display: inline-block;
+    margin-left: 6px;
+    padding: 1px 5px;
+    border-radius: 4px;
+    font-size: 10px;
+    font-weight: 800;
+    font-variant-numeric: tabular-nums;
+    background: rgba(220, 38, 38, 0.22);
+    color: #fca5a5;
+    border: 1px solid rgba(220, 38, 38, 0.4);
+    vertical-align: middle;
+  }
+  .bonus-chip.b-plus {
+    background: rgba(34, 197, 94, 0.22);
+    color: #86efac;
+    border-color: rgba(34, 197, 94, 0.45);
+  }
+
   /* ========== PANNELLO FORMAZIONI + VOTI LIVE ========== */
   .lineups {
-    margin: 20px clamp(16px, 4vw, 56px) 0;
-    padding: 16px 20px 18px;
+    margin: 14px clamp(16px, 4vw, 56px) 0;
+    padding: 10px 16px 12px;
+    flex-shrink: 0;
+    max-height: 45vh;
+    overflow-y: auto;
   }
   .lineups-head {
     display: flex;
     align-items: center;
     justify-content: center;
-    margin-bottom: 12px;
+    margin-bottom: 8px;
   }
   .lp-title {
     margin: 0;
@@ -1157,7 +1466,7 @@
     display: flex;
     align-items: center;
     gap: 10px;
-    padding: 8px 10px;
+    padding: 6px 8px;
     background: linear-gradient(90deg, rgba(0, 0, 0, 0.6), rgba(252, 211, 77, 0.06));
     border: 1px solid rgba(252, 211, 77, 0.18);
     border-radius: 8px;
@@ -1200,25 +1509,25 @@
     padding: 0;
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: 1px;
   }
   .lp-row {
     display: grid;
-    grid-template-columns: 32px 1fr 44px;
+    grid-template-columns: 28px 1fr 40px;
     align-items: center;
-    gap: 10px;
-    padding: 5px 8px;
-    border-radius: 6px;
-    font-size: 13px;
+    gap: 8px;
+    padding: 3px 6px;
+    border-radius: 5px;
+    font-size: 12px;
     transition: background 0.15s;
   }
   .team-col.away .lp-row {
-    grid-template-columns: 44px 1fr 32px;
+    grid-template-columns: 40px 1fr 28px;
   }
   .lp-row:hover { background: rgba(252, 211, 77, 0.06); }
   .lp-row.sub {
-    opacity: 0.72;
-    font-size: 12px;
+    opacity: 0.7;
+    font-size: 11px;
   }
   .lp-row .shirt {
     text-align: center;
