@@ -9,7 +9,7 @@
   const store = careerStore()
   let career = $derived(store.career)
 
-  type OverlayKind = 'goal' | 'yellow' | 'red' | 'half_time' | 'full_time' | 'kickoff'
+  type OverlayKind = 'goal' | 'yellow' | 'red' | 'half_time' | 'full_time' | 'kickoff' | 'second_half'
   interface OverlayPayload {
     kind: OverlayKind
     side?: 'home' | 'away' | null
@@ -23,16 +23,60 @@
   let currentIdx = $state(0)
   let homeScore = $state(0)
   let awayScore = $state(0)
-  let minute = $state(0)
+  /** Tempo simulato corrente in SECONDI (0 a ~95*60). Cresce fluido tra eventi. */
+  let clockSec = $state(0)
   let playing = $state(true)
   let finished = $state(false)
-  let speed = $state(1)  // 0.5, 1, 2, 4
+  let speed = $state(1)  // 0.5, 1, 2, 4, 8
   let goalFlash = $state(false)
   let overlay = $state<OverlayPayload | null>(null)
   let errorMsg = $state<string | null>(null)
   let streamEl: HTMLDivElement | undefined = $state()
   let timer: ReturnType<typeof setTimeout> | null = null
   let overlayTimer: ReturnType<typeof setTimeout> | null = null
+
+  // ====== CRONOMETRO ANIMATO ======
+  // Tra un evento e l'altro avanziamo il clock con requestAnimationFrame
+  // in modo che minuti:secondi scorrano fluidi; quando arriva l'evento
+  // (overlay/suspense) il clock si ferma sul valore corrente.
+  let rafId = 0
+  let clockStartWall = 0
+  let clockStartSim = 0
+  let clockTargetSim = 0
+  let clockDurMs = 0
+  let clockRunning = false
+
+  function startClockAnim(fromSec: number, toSec: number, durMs: number) {
+    stopClockAnim()
+    if (toSec <= fromSec || durMs <= 16) {
+      clockSec = toSec
+      return
+    }
+    clockStartWall = performance.now()
+    clockStartSim = fromSec
+    clockTargetSim = toSec
+    clockDurMs = durMs
+    clockRunning = true
+    rafId = requestAnimationFrame(clockLoop)
+  }
+  function clockLoop() {
+    if (!clockRunning) return
+    const t = Math.min(1, (performance.now() - clockStartWall) / clockDurMs)
+    clockSec = clockStartSim + (clockTargetSim - clockStartSim) * t
+    if (t < 1) rafId = requestAnimationFrame(clockLoop)
+    else clockRunning = false
+  }
+  function stopClockAnim() {
+    clockRunning = false
+    if (rafId) { cancelAnimationFrame(rafId); rafId = 0 }
+  }
+
+  function fmtClock(sec: number): string {
+    const total = Math.max(0, Math.floor(sec))
+    const mm = Math.floor(total / 60)
+    const ss = total % 60
+    return `${mm}'${String(ss).padStart(2, '0')}"`
+  }
 
   function eventDelay(): number {
     // Default 5000ms/evento (cinematografico); 0.5x = ultra-lento, 2x/4x/8x = veloce
@@ -45,9 +89,10 @@
     goal: 4200,
     yellow: 2200,
     red: 3000,
-    half_time: 2800,
-    full_time: 3200,
-    kickoff: 1800,
+    half_time: 3800,
+    full_time: 4500,
+    kickoff: 3000,
+    second_half: 3000,
   }
 
   // Pre-evento "suspense": qualcosa sta per accadere
@@ -82,7 +127,16 @@
   onMount(async () => {
     if (!career) { push('/'); return }
     // Preload asset overlay per evitare lag al primo trigger
-    for (const src of ['/assets/match/Gol.png', '/assets/match/Cartellino_giallo.png', '/assets/match/Cartellino_rosso.png']) {
+    const PRELOAD = [
+      '/assets/match/Gol.png',
+      '/assets/match/Cartellino_giallo.png',
+      '/assets/match/Cartellino_rosso.png',
+      '/assets/match/Inizio_partita.png',
+      '/assets/match/Fine_primo_tempo.png',
+      '/assets/match/Inizio_secondo_tempo.png',
+      '/assets/match/Fine_partita.png',
+    ]
+    for (const src of PRELOAD) {
       const img = new Image()
       img.src = src
     }
@@ -110,6 +164,7 @@
     if (timer) { clearTimeout(timer); timer = null }
     if (overlayTimer) { clearTimeout(overlayTimer); overlayTimer = null }
     if (suspenseTimer) { clearTimeout(suspenseTimer); suspenseTimer = null }
+    stopClockAnim()
   })
 
   function maybeOpenOverlay(ev: MatchEvent): boolean {
@@ -124,11 +179,13 @@
       payload = { kind: 'half_time' }
     } else if (ev.kind === 'full_time') {
       payload = { kind: 'full_time' }
-    } else if (ev.kind === 'kickoff' && minute === 0) {
-      payload = { kind: 'kickoff' }
+    } else if (ev.kind === 'kickoff') {
+      // L'engine emette 2 kickoff: minuto 0 = inizio partita, minuto 46 = inizio 2° tempo
+      payload = ev.minute === 0 ? { kind: 'kickoff' } : { kind: 'second_half' }
     }
     if (!payload) return false
     overlay = payload
+    stopClockAnim()
     const ms = OVERLAY_MS[payload.kind]
     overlayTimer = setTimeout(() => {
       overlay = null
@@ -138,33 +195,47 @@
     return true
   }
 
+  /**
+   * Tick principale: avvia il cronometro animato da clockSec fino al
+   * minuto:second del prossimo evento, e dopo eventDelay() lo consuma.
+   */
   function tickReplay() {
     if (!result || !playing) return
     if (overlay || suspense) return  // blocchi attivi: aspetta che si liberino
     if (currentIdx >= result.events.length) {
+      stopClockAnim()
       finished = true
       playing = false
       return
     }
     const ev = result.events[currentIdx]
-    // Se è un evento saliente, prima fase suspense
-    const sKind = suspenseKindOf(ev)
-    if (sKind) {
-      suspense = sKind
-      suspenseTimer = setTimeout(() => {
-        suspense = null
-        suspenseTimer = null
-        if (playing && !finished) consumeEvent(ev)
-      }, SUSPENSE_MS[sKind])
-      return
-    }
-    consumeEvent(ev)
+    const targetSec = ev.minute * 60 + ev.second
+    const delay = eventDelay()
+    // Animazione cronometro: scorre fluido fino al prossimo evento
+    startClockAnim(clockSec, targetSec, delay)
+    // Quando scade il delay, arriva l'evento
+    timer = setTimeout(() => {
+      stopClockAnim()
+      clockSec = targetSec
+      // Se è un evento saliente, prima fase suspense
+      const sKind = suspenseKindOf(ev)
+      if (sKind) {
+        suspense = sKind
+        suspenseTimer = setTimeout(() => {
+          suspense = null
+          suspenseTimer = null
+          if (playing && !finished) consumeEvent(ev)
+        }, SUSPENSE_MS[sKind])
+        return
+      }
+      consumeEvent(ev)
+    }, delay)
   }
 
   function consumeEvent(ev: MatchEvent) {
     shown = [...shown, ev]
     currentIdx++
-    minute = ev.minute
+    clockSec = ev.minute * 60 + ev.second
     if (ev.kind === 'goal') {
       if (ev.side === 'home') homeScore++
       if (ev.side === 'away') awayScore++
@@ -173,7 +244,8 @@
     }
     autoscroll()
     if (maybeOpenOverlay(ev)) return
-    timer = setTimeout(tickReplay, eventDelay())
+    // Subito al prossimo tick (sarà lui ad avviare il cronometro)
+    tickReplay()
   }
 
   async function autoscroll() {
@@ -185,7 +257,10 @@
     if (finished) return
     playing = !playing
     if (playing) tickReplay()
-    else if (timer) { clearTimeout(timer); timer = null }
+    else {
+      if (timer) { clearTimeout(timer); timer = null }
+      stopClockAnim()
+    }
   }
 
   function skipToEnd() {
@@ -193,6 +268,7 @@
     if (timer) { clearTimeout(timer); timer = null }
     if (overlayTimer) { clearTimeout(overlayTimer); overlayTimer = null }
     if (suspenseTimer) { clearTimeout(suspenseTimer); suspenseTimer = null }
+    stopClockAnim()
     overlay = null
     suspense = null
     // Applica tutti gli eventi rimanenti
@@ -205,7 +281,8 @@
     }
     shown = [...result.events]
     currentIdx = result.events.length
-    minute = result.events[result.events.length - 1]?.minute ?? 90
+    const last = result.events[result.events.length - 1]
+    clockSec = last ? last.minute * 60 + last.second : 90 * 60
     finished = true
     playing = false
     autoscroll()
@@ -213,8 +290,9 @@
 
   function setSpeed(s: number) {
     speed = s
-    if (playing && !finished) {
+    if (playing && !finished && !overlay && !suspense) {
       if (timer) { clearTimeout(timer); timer = null }
+      stopClockAnim()
       tickReplay()
     }
   }
@@ -266,7 +344,7 @@
           <span class="s-away">{awayScore}</span>
         </div>
         <div class="minute">
-          <span class="min-num">{minute}'</span>
+          <span class="min-num">{fmtClock(clockSec)}</span>
           {#if !finished}
             <span class="live-dot"></span>
             <span class="live-label">LIVE</span>
@@ -294,7 +372,13 @@
     {/if}
 
     {#if overlay}
-      <div class="overlay" class:o-goal={overlay.kind === 'goal'} class:o-card={overlay.kind === 'yellow' || overlay.kind === 'red'} class:o-red={overlay.kind === 'red'} class:o-break={overlay.kind === 'half_time' || overlay.kind === 'full_time' || overlay.kind === 'kickoff'}>
+      <div
+        class="overlay"
+        class:o-goal={overlay.kind === 'goal'}
+        class:o-card={overlay.kind === 'yellow' || overlay.kind === 'red'}
+        class:o-red={overlay.kind === 'red'}
+        class:o-break={overlay.kind === 'half_time' || overlay.kind === 'full_time' || overlay.kind === 'kickoff' || overlay.kind === 'second_half'}
+      >
         {#if overlay.kind === 'goal'}
           <img class="ov-goal-img" src="/assets/match/Gol.png" alt="Gol" />
           <div class="ov-goal-text">GOOOOOL!</div>
@@ -314,14 +398,17 @@
           <div class="ov-card-text big">ESPULSIONE!</div>
           {#if overlay.playerName}<div class="ov-player">{overlay.playerName}</div>{/if}
         {:else if overlay.kind === 'kickoff'}
-          <div class="ov-break-text">FISCHIO D'INIZIO</div>
+          <img class="ov-break-img" src="/assets/match/Inizio_partita.png" alt="Inizio partita" />
           <div class="ov-break-sub">{teamName(myFixture.homeId)} · {teamName(myFixture.awayId)}</div>
         {:else if overlay.kind === 'half_time'}
-          <div class="ov-break-text">FINE PRIMO TEMPO</div>
+          <img class="ov-break-img" src="/assets/match/Fine_primo_tempo.png" alt="Fine primo tempo" />
+          <div class="ov-break-sub">Parziale: <strong>{homeScore} – {awayScore}</strong></div>
+        {:else if overlay.kind === 'second_half'}
+          <img class="ov-break-img" src="/assets/match/Inizio_secondo_tempo.png" alt="Inizio secondo tempo" />
           <div class="ov-break-sub">{homeScore} – {awayScore}</div>
         {:else if overlay.kind === 'full_time'}
-          <div class="ov-break-text">FINE PARTITA</div>
-          <div class="ov-break-sub">{homeScore} – {awayScore}</div>
+          <img class="ov-break-img" src="/assets/match/Fine_partita.png" alt="Fine partita" />
+          <div class="ov-break-sub">Risultato finale: <strong>{homeScore} – {awayScore}</strong></div>
         {/if}
       </div>
     {/if}
@@ -850,27 +937,48 @@
     animation: fadeUp 0.5s 0.5s both;
   }
 
-  /* --- BREAK (KICKOFF / HALFTIME / FULLTIME) --- */
-  .overlay.o-break .ov-break-text {
-    font-size: clamp(40px, 7vw, 90px);
-    font-weight: 900;
-    letter-spacing: 0.08em;
-    background: linear-gradient(180deg, #fef3c7 0%, #fcd34d 50%, #b45309 100%);
-    -webkit-background-clip: text;
-    background-clip: text;
-    -webkit-text-fill-color: transparent;
-    color: transparent;
-    filter: drop-shadow(0 6px 40px rgba(245, 158, 11, 0.5));
-    text-align: center;
-    animation: bigZoom 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+  /* --- BREAK (kickoff / half_time / second_half / full_time) ---
+     L'immagine PNG occupa lo schermo come backdrop (object-fit cover),
+     il sottotitolo dinamico (score) si posiziona in basso. */
+  .overlay.o-break {
+    padding: 0;
+    background: #000;
+    gap: 0;
+    position: relative;
   }
-  .ov-break-sub {
-    margin-top: 12px;
-    font-size: 22px;
-    color: #d4cfc1;
+  .ov-break-img {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    animation: breakImgIn 0.7s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+  @keyframes breakImgIn {
+    0%   { transform: scale(1.08); opacity: 0; }
+    100% { transform: scale(1); opacity: 1; }
+  }
+  .overlay.o-break .ov-break-sub {
+    position: absolute;
+    bottom: 8%;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(0, 0, 0, 0.75);
+    backdrop-filter: blur(6px);
+    border: 1px solid rgba(252, 211, 77, 0.45);
+    padding: 10px 24px;
+    border-radius: 12px;
+    font-size: clamp(16px, 2vw, 22px);
+    color: #fef3c7;
     font-weight: 700;
     letter-spacing: 0.05em;
-    animation: fadeUp 0.5s 0.3s both;
+    animation: fadeUp 0.5s 0.5s both;
+    z-index: 2;
+  }
+  .overlay.o-break .ov-break-sub strong {
+    color: #fcd34d;
+    margin-left: 6px;
+    font-variant-numeric: tabular-nums;
   }
 
   @media (max-width: 900px) {
