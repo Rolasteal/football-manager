@@ -72,42 +72,63 @@ export const TPL = {
     '⚖️ Calcio di rigore! Atterrato {p2} in area, niente da fare per {p}.',
     '⚖️ L\'arbitro fischia: è rigore per {t}!',
   ],
-  penalty_goal: [
-    '⚽ {p} dal dischetto: rete! Gol al {min}\'!',
-    '⚽ Glaciale {p}: trasforma il rigore al {min}\'!',
-    '⚽ {p} non sbaglia dagli undici metri: gol al {min}\'!',
+  // === Rigore SEGNATO — stile ===
+  penalty_goal_top_left: [
+    '⚽ {p} all\'incrocio sinistro: imparabile dagli undici metri!',
+    '⚽ Bordata di {p}: incrocio sinistro, gol al {min}\'!',
   ],
-  penalty_saved: [
-    '🧤 PARATA! {p2} ipnotizza {p} dal dischetto!',
-    '🧤 Che paratona di {p2}: rigore neutralizzato!',
-    '🧤 {p} se lo fa parare: bravo {p2}!',
+  penalty_goal_top_right: [
+    '⚽ {p} all\'incrocio destro: il portiere non può nulla!',
+    '⚽ {p} pesca l\'incrocio destro: rigore trasformato al {min}\'!',
   ],
-  penalty_missed: [
-    '😱 {p} sbaglia il rigore: pallone fuori!',
-    '😱 Disastro {p}: spreca il rigore al {min}\'!',
-    '😱 Tiro alle stelle di {p}: rigore sbagliato!',
+  penalty_goal_low_left: [
+    '⚽ {p} rasoterra a sinistra: angolo basso, gol al {min}\'!',
+    '⚽ Conclusione precisa di {p}: rasoterra sinistro, rete!',
   ],
-  penalty_post: [
+  penalty_goal_low_right: [
+    '⚽ {p} rasoterra a destra: portiere battuto al {min}\'!',
+    '⚽ {p} angola sul basso destra: rigore in fondo al sacco!',
+  ],
+  penalty_goal_chip: [
+    '⚽ CUCCHIAIO CENTRALE! Che freddezza di {p} al {min}\'!',
+    '⚽ {p} prova il pallonetto centrale: gol di pura classe!',
+    '⚽ Cucchiaio di {p}: il portiere si tuffa, palla in mezzo!',
+  ],
+  // === Rigore PARATO ===
+  penalty_saved_left: [
+    '🧤 PARATONA! {p2} si distende a sinistra e respinge il tiro di {p}!',
+    '🧤 {p2} vola alla sua sinistra: rigore neutralizzato!',
+  ],
+  penalty_saved_right: [
+    '🧤 PARATONA! {p2} si tuffa a destra e dice no a {p}!',
+    '🧤 {p2} indovina l\'angolo destro: rigore parato!',
+  ],
+  penalty_saved_center: [
+    '🧤 {p2} resta al centro e blocca il tiro di {p}: cuore in gola!',
+    '🧤 Tiro centrale di {p}: facile preda di {p2}.',
+  ],
+  // === Rigore MANCATO (fuori) ===
+  penalty_miss_high: [
+    '☁️ {p} la spara alle stelle: rigore alto sopra la traversa!',
+    '☁️ Tiro altissimo di {p}: rigore in curva!',
+  ],
+  penalty_miss_wide_left: [
+    '🚀 {p} calcia largo a sinistra: rigore a lato!',
+    '🚀 Tiro impreciso di {p}: pallone fuori a sinistra.',
+  ],
+  penalty_miss_wide_right: [
+    '🚀 {p} calcia largo a destra: rigore a lato!',
+    '🚀 Tiro impreciso di {p}: pallone fuori a destra.',
+  ],
+  penalty_miss_post: [
     '🟫 PALO! {p} prende il legno alla destra del portiere!',
     '🟫 Sul palo di {p}! Sfortunatissimo dal dischetto.',
     '🟫 Che sfortuna: il pallone di {p} bacia il palo!',
   ],
-  penalty_crossbar: [
+  penalty_miss_crossbar: [
     '🟫 TRAVERSA! {p} colpisce in pieno il legno superiore!',
     '🟫 Sulla traversa di {p}! Pallone fuori di pochissimo.',
     '🟫 Che sfortuna: traversa piena per {p} dal dischetto!',
-  ],
-  penalty_high: [
-    '☁️ {p} la spara alle stelle: rigore alto sopra la traversa!',
-    '☁️ Tiro altissimo di {p}: rigore in curva!',
-  ],
-  penalty_wide_left: [
-    '🚀 {p} calcia largo a sinistra: rigore a lato!',
-    '🚀 Tiro impreciso di {p}: pallone fuori a sinistra.',
-  ],
-  penalty_wide_right: [
-    '🚀 {p} calcia largo a destra: rigore a lato!',
-    '🚀 Tiro impreciso di {p}: pallone fuori a destra.',
   ],
   foul: [
     'Fallo di {p} su {p2}.',

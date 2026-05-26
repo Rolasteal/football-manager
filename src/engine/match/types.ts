@@ -43,14 +43,28 @@ export type MatchEventKind =
 
 export type Side = 'home' | 'away'
 
-/** Sotto-tipo del kind, per discriminare esiti di rigori, espulsioni, ecc.
- *  - 'post' | 'crossbar' | 'high' | 'wide_left' | 'wide_right': rigore sbagliato
- *  - 'direct' | 'second_yellow': red_card dovuto a brutto fallo / doppia ammonizione
- *  - 'penalty': qualifica un goal/shot/save come esito di un rigore (utile per fanta-bonus) */
+/** Sotto-tipo del kind, per discriminare esiti specifici di rigori, espulsioni, ecc.
+ *  Tutti i note con prefisso `pen_` qualificano l'evento come esito di un rigore. */
 export type MatchEventNote =
-  | 'post' | 'crossbar' | 'high' | 'wide_left' | 'wide_right'
-  | 'direct' | 'second_yellow'
-  | 'penalty'
+  // Rigore MANCATO (palla non in porta)
+  | 'pen_miss_high'        // alto sopra la traversa
+  | 'pen_miss_wide_left'   // largo a sinistra
+  | 'pen_miss_wide_right'  // largo a destra
+  | 'pen_miss_post'        // palo
+  | 'pen_miss_crossbar'    // traversa
+  // Rigore PARATO dal portiere
+  | 'pen_saved_left'       // parato a sinistra
+  | 'pen_saved_center'     // parato al centro
+  | 'pen_saved_right'      // parato a destra
+  // Rigore SEGNATO (stile gol)
+  | 'pen_goal_top_left'    // incrocio sinistro
+  | 'pen_goal_top_right'   // incrocio destro
+  | 'pen_goal_low_left'    // rasoterra a sinistra
+  | 'pen_goal_low_right'   // rasoterra a destra
+  | 'pen_goal_chip'        // cucchiaio centrale
+  // Espulsione: distinzione per fanta-bonus
+  | 'direct'               // rosso diretto (brutto fallo)
+  | 'second_yellow'        // doppia ammonizione
 
 export interface MatchEvent {
   /** Minuto simulato 0-90 (+ recupero) */

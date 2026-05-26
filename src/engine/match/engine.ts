@@ -325,42 +325,58 @@ export function simulateMatch(opts: SimulateMatchOptions): MatchResult {
     const sec = rng.int(20, 50)
     attStats.shots++
     if (roll < 0.75) {
-      // GOAL
+      // GOAL 75% — split in 5 stili. Distribuzione: 25%+25% incroci (top),
+      // 20%+20% rasoterra (low), 10% cucchiaio centrale.
+      const sub = rng.next()
+      let goalNote: 'pen_goal_top_left' | 'pen_goal_top_right' | 'pen_goal_low_left' | 'pen_goal_low_right' | 'pen_goal_chip'
+      let tplKey: 'penalty_goal_top_left' | 'penalty_goal_top_right' | 'penalty_goal_low_left' | 'penalty_goal_low_right' | 'penalty_goal_chip'
+      if      (sub < 0.25) { goalNote = 'pen_goal_top_left';  tplKey = 'penalty_goal_top_left' }
+      else if (sub < 0.50) { goalNote = 'pen_goal_top_right'; tplKey = 'penalty_goal_top_right' }
+      else if (sub < 0.70) { goalNote = 'pen_goal_low_left';  tplKey = 'penalty_goal_low_left' }
+      else if (sub < 0.90) { goalNote = 'pen_goal_low_right'; tplKey = 'penalty_goal_low_right' }
+      else                 { goalNote = 'pen_goal_chip';      tplKey = 'penalty_goal_chip' }
       attStats.shotsOnTarget++
       events.push({
         minute: min, second: sec, kind: 'goal',
         side: attSide.side, playerId: taker.id,
         ballPosition: ballAt(attSide.side, { x: 0.95, y: 0.5 }, rng),
-        commentary: tpl(rng, 'penalty_goal', { p: shortName(taker), min }),
-        note: 'penalty',
+        commentary: tpl(rng, tplKey, { p: shortName(taker), min }),
+        note: goalNote,
       })
       if (attSide.side === 'home') homeScore++; else awayScore++
       scorers.push({ playerId: taker.id, teamId: attSide.team.id, minute: min, note: 'rigore' })
       ratings[taker.id] = clamp((ratings[taker.id] ?? 6) + 1.0, 1, 10)
     } else if (roll < 0.92) {
-      // SAVED (paratona del portiere) — 17%
+      // SAVED 17% — split in 3 direzioni di parata. Distribuzione realistica:
+      // 45% sx, 45% dx, 10% centro (il portiere tipicamente si tuffa).
+      const sub = rng.next()
+      let saveNote: 'pen_saved_left' | 'pen_saved_center' | 'pen_saved_right'
+      let tplKey: 'penalty_saved_left' | 'penalty_saved_center' | 'penalty_saved_right'
+      if      (sub < 0.45) { saveNote = 'pen_saved_left';   tplKey = 'penalty_saved_left' }
+      else if (sub < 0.90) { saveNote = 'pen_saved_right';  tplKey = 'penalty_saved_right' }
+      else                 { saveNote = 'pen_saved_center'; tplKey = 'penalty_saved_center' }
       attStats.shotsOnTarget++
       events.push({
         minute: min, second: sec, kind: 'save',
         side: defSide.side, playerId: gk?.id, secondaryPlayerId: taker.id,
         ballPosition: ballAt(defSide.side, { x: 0.05, y: 0.5 }, rng),
-        commentary: tpl(rng, 'penalty_saved', { p: shortName(taker), p2: gk ? shortName(gk) : 'il portiere' }),
-        note: 'penalty',
+        commentary: tpl(rng, tplKey, { p: shortName(taker), p2: gk ? shortName(gk) : 'il portiere' }),
+        note: saveNote,
       })
       if (gk) ratings[gk.id] = clamp((ratings[gk.id] ?? 6) + 0.8, 1, 10)
       ratings[taker.id] = clamp((ratings[taker.id] ?? 6) - 0.3, 1, 10)
     } else {
-      // MISSED — fuori dello specchio (8%) split in 5 esiti distinti:
+      // MISSED 8% — fuori dello specchio, 5 esiti:
       //   50%  alto    · 12.5% fuori-sinistra · 12.5% fuori-destra
       //   12.5% palo   · 12.5% traversa
       const sub = rng.next()
-      let subNote: 'high' | 'wide_left' | 'wide_right' | 'post' | 'crossbar'
-      let tplKey: 'penalty_high' | 'penalty_wide_left' | 'penalty_wide_right' | 'penalty_post' | 'penalty_crossbar'
-      if      (sub < 0.50)  { subNote = 'high';       tplKey = 'penalty_high' }
-      else if (sub < 0.625) { subNote = 'wide_left';  tplKey = 'penalty_wide_left' }
-      else if (sub < 0.75)  { subNote = 'wide_right'; tplKey = 'penalty_wide_right' }
-      else if (sub < 0.875) { subNote = 'post';       tplKey = 'penalty_post' }
-      else                  { subNote = 'crossbar';   tplKey = 'penalty_crossbar' }
+      let subNote: 'pen_miss_high' | 'pen_miss_wide_left' | 'pen_miss_wide_right' | 'pen_miss_post' | 'pen_miss_crossbar'
+      let tplKey: 'penalty_miss_high' | 'penalty_miss_wide_left' | 'penalty_miss_wide_right' | 'penalty_miss_post' | 'penalty_miss_crossbar'
+      if      (sub < 0.50)  { subNote = 'pen_miss_high';       tplKey = 'penalty_miss_high' }
+      else if (sub < 0.625) { subNote = 'pen_miss_wide_left';  tplKey = 'penalty_miss_wide_left' }
+      else if (sub < 0.75)  { subNote = 'pen_miss_wide_right'; tplKey = 'penalty_miss_wide_right' }
+      else if (sub < 0.875) { subNote = 'pen_miss_post';       tplKey = 'penalty_miss_post' }
+      else                  { subNote = 'pen_miss_crossbar';   tplKey = 'penalty_miss_crossbar' }
       events.push({
         minute: min, second: sec, kind: 'shot',
         side: attSide.side, playerId: taker.id,

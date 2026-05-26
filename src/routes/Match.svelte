@@ -4,22 +4,21 @@
   import { careerStore, persistActiveCareer } from '$state/career.svelte'
   import { advanceMatchday, autoLineup, FORMATIONS } from '$engine/career/career'
   import type { Fixture, MatchResult, TeamMatchStats } from '$engine/competition/types'
-  import type { MatchEvent } from '$engine/match/types'
+  import type { MatchEvent, MatchEventNote } from '$engine/match/types'
   import type { Lineup } from '$engine/tactics/types'
   import type { EntityId, Player } from '$engine/types'
 
   const store = careerStore()
   let career = $derived(store.career)
 
-  type OverlayKind = 'goal' | 'yellow' | 'red' | 'half_time' | 'full_time' | 'kickoff' | 'second_half' | 'penalty' | 'penalty_miss' | 'mvp'
-  type PenaltyMissKind = 'high' | 'wide_left' | 'wide_right' | 'post' | 'crossbar'
+  type OverlayKind = 'goal' | 'yellow' | 'red' | 'half_time' | 'full_time' | 'kickoff' | 'second_half' | 'penalty' | 'penalty_outcome' | 'mvp'
   interface OverlayPayload {
     kind: OverlayKind
     side?: 'home' | 'away' | null
     playerName?: string
     teamName?: string
-    /** Tipo di "rigore sbagliato" — per scegliere la PNG fra le 5 di Roberto */
-    missKind?: PenaltyMissKind
+    /** Per overlay 'penalty_outcome': il sotto-tipo da cui derivare la PNG specifica */
+    outcomeNote?: MatchEventNote
     // MVP fields
     mvpId?: EntityId
     mvpRating?: number
@@ -106,7 +105,7 @@
     kickoff: 5000,
     second_half: 5000,
     penalty: 2600,
-    penalty_miss: 3500,
+    penalty_outcome: 3500,
     mvp: 6500,
   }
 
@@ -362,6 +361,12 @@
       '/assets/match/Rigore_sbagliato_fuori2.png',
       '/assets/match/Rigore_sbagliato_palo.png',
       '/assets/match/Rigore_sbagliato_traversa.png',
+      '/assets/match/Rigore_parato_sx.png',
+      '/assets/match/Rigore_parato_centro.png',
+      '/assets/match/Rigore_parato_dx.png',
+      '/assets/match/Rigore_segnato_incrocio.png',
+      '/assets/match/Rigore_segnato_sx.png',
+      '/assets/match/Rigore_segnato_cucchiaio.png',
     ]
     // Preload BLOCCANTE: aspetta che le PNG siano in cache prima di mostrare
     // l'overlay kickoff (altrimenti il primo overlay è nero senza immagine).
@@ -423,27 +428,36 @@
     stopClockAnim()
   })
 
+  /** True se il `note` qualifica l'evento come esito specifico di un rigore
+   *  (segnato con stile / parato / mancato) — usato per scegliere overlay. */
+  function isPenaltyOutcomeNote(n: MatchEventNote | undefined): boolean {
+    return !!n && (n.startsWith('pen_goal_') || n.startsWith('pen_saved_') || n.startsWith('pen_miss_'))
+  }
+
   function maybeOpenOverlay(ev: MatchEvent): boolean {
     let payload: OverlayPayload | null = null
     if (ev.kind === 'goal') {
-      payload = { kind: 'goal', side: ev.side, playerName: nameOf(ev.playerId), teamName: teamOfSide(ev.side) }
+      // Gol da rigore → overlay specifico con PNG stile (incrocio/cucchiaio/...)
+      // Gol normale → overlay GOOOOL classico con Gol.png
+      if (isPenaltyOutcomeNote(ev.note)) {
+        payload = { kind: 'penalty_outcome', side: ev.side, playerName: nameOf(ev.playerId), teamName: teamOfSide(ev.side), outcomeNote: ev.note }
+      } else {
+        payload = { kind: 'goal', side: ev.side, playerName: nameOf(ev.playerId), teamName: teamOfSide(ev.side) }
+      }
     } else if (ev.kind === 'yellow_card') {
       payload = { kind: 'yellow', side: ev.side, playerName: nameOf(ev.playerId), teamName: teamOfSide(ev.side) }
     } else if (ev.kind === 'red_card') {
       payload = { kind: 'red', side: ev.side, playerName: nameOf(ev.playerId), teamName: teamOfSide(ev.side) }
     } else if (ev.kind === 'penalty') {
       payload = { kind: 'penalty', side: ev.side, playerName: nameOf(ev.playerId), teamName: teamOfSide(ev.side) }
-    } else if (
-      ev.kind === 'shot' &&
-      (ev.note === 'high' || ev.note === 'wide_left' || ev.note === 'wide_right' || ev.note === 'post' || ev.note === 'crossbar')
-    ) {
-      // Rigore sbagliato: trigger overlay con la PNG specifica del tipo
+    } else if ((ev.kind === 'shot' || ev.kind === 'save') && isPenaltyOutcomeNote(ev.note)) {
+      // Rigore parato (save) o mancato (shot): overlay con PNG specifica
       payload = {
-        kind: 'penalty_miss',
+        kind: 'penalty_outcome',
         side: ev.side,
-        playerName: nameOf(ev.playerId),
+        playerName: nameOf(ev.kind === 'save' ? ev.secondaryPlayerId : ev.playerId),
         teamName: teamOfSide(ev.side),
-        missKind: ev.note,
+        outcomeNote: ev.note,
       }
     } else if (ev.kind === 'half_time') {
       payload = { kind: 'half_time' }
@@ -602,16 +616,41 @@
     return { c1: t?.primaryColor ?? '#444', c2: t?.secondaryColor ?? '#888' }
   }
 
-  /** Mappa il sotto-tipo di rigore mancato → PNG asset specifica.
-   *  Roberto distingue "fuori sinistra" e "fuori destra" → 2 PNG separate. */
-  function penaltyMissAsset(k: PenaltyMissKind): string {
-    switch (k) {
-      case 'high':       return '/assets/match/Rigore_sbagliato_alto.png'
-      case 'wide_left':  return '/assets/match/Rigore_sbagliato_fuori.png'
-      case 'wide_right': return '/assets/match/Rigore_sbagliato_fuori2.png'
-      case 'post':       return '/assets/match/Rigore_sbagliato_palo.png'
-      case 'crossbar':   return '/assets/match/Rigore_sbagliato_traversa.png'
+  /** Mappa il sotto-tipo di esito rigore (segnato stile / parato / mancato)
+   *  alla PNG cinematografica corrispondente. Per i tipi non ancora forniti
+   *  da Roberto (pen_goal_top_right, pen_goal_low_right) fallback su Gol.png
+   *  finché non arrivano le immagini dedicate. */
+  function penaltyAsset(n: MatchEventNote | undefined): string {
+    switch (n) {
+      // === Rigore SEGNATO — stile ===
+      case 'pen_goal_top_left':   return '/assets/match/Rigore_segnato_incrocio.png'
+      case 'pen_goal_low_left':   return '/assets/match/Rigore_segnato_sx.png'
+      case 'pen_goal_chip':       return '/assets/match/Rigore_segnato_cucchiaio.png'
+      // Fallback temporanei (Roberto deve ancora fornire incrocio dx / rasoterra dx)
+      case 'pen_goal_top_right':  return '/assets/match/Gol.png'
+      case 'pen_goal_low_right':  return '/assets/match/Gol.png'
+      // === Rigore PARATO ===
+      case 'pen_saved_left':      return '/assets/match/Rigore_parato_sx.png'
+      case 'pen_saved_center':    return '/assets/match/Rigore_parato_centro.png'
+      case 'pen_saved_right':     return '/assets/match/Rigore_parato_dx.png'
+      // === Rigore MANCATO (fuori) ===
+      case 'pen_miss_high':       return '/assets/match/Rigore_sbagliato_alto.png'
+      case 'pen_miss_wide_left':  return '/assets/match/Rigore_sbagliato_fuori.png'
+      case 'pen_miss_wide_right': return '/assets/match/Rigore_sbagliato_fuori2.png'
+      case 'pen_miss_post':       return '/assets/match/Rigore_sbagliato_palo.png'
+      case 'pen_miss_crossbar':   return '/assets/match/Rigore_sbagliato_traversa.png'
+      default:                    return '/assets/match/Gol.png'
     }
+  }
+
+  /** Titolo fallback testuale per overlay penalty_outcome — visibile se la PNG
+   *  fallisce il caricamento (z-index dietro l'img). */
+  function penaltyOutcomeTitle(n: MatchEventNote | undefined): string {
+    if (!n) return ''
+    if (n.startsWith('pen_goal_'))  return 'RIGORE SEGNATO'
+    if (n.startsWith('pen_saved_')) return 'RIGORE PARATO'
+    if (n.startsWith('pen_miss_'))  return 'RIGORE SBAGLIATO'
+    return ''
   }
 
   function eventClass(ev: MatchEvent): string {
@@ -686,7 +725,7 @@
         class:o-red={overlay.kind === 'red'}
         class:o-pen={overlay.kind === 'penalty'}
         class:o-mvp={overlay.kind === 'mvp'}
-        class:o-break={overlay.kind === 'half_time' || overlay.kind === 'full_time' || overlay.kind === 'kickoff' || overlay.kind === 'second_half' || overlay.kind === 'penalty_miss'}
+        class:o-break={overlay.kind === 'half_time' || overlay.kind === 'full_time' || overlay.kind === 'kickoff' || overlay.kind === 'second_half' || overlay.kind === 'penalty_outcome'}
       >
         {#if overlay.kind === 'goal'}
           <img class="ov-goal-img" src="/assets/match/Gol.png" alt="Gol" />
@@ -728,9 +767,9 @@
           {#if overlay.teamName}
             <div class="ov-pen-sub">per il <strong>{overlay.teamName}</strong></div>
           {/if}
-        {:else if overlay.kind === 'penalty_miss' && overlay.missKind}
-          <div class="ov-break-fallback">RIGORE SBAGLIATO</div>
-          <img class="ov-break-img" src={penaltyMissAsset(overlay.missKind)} alt="Rigore sbagliato" decoding="async" />
+        {:else if overlay.kind === 'penalty_outcome' && overlay.outcomeNote}
+          <div class="ov-break-fallback">{penaltyOutcomeTitle(overlay.outcomeNote)}</div>
+          <img class="ov-break-img" src={penaltyAsset(overlay.outcomeNote)} alt={penaltyOutcomeTitle(overlay.outcomeNote)} decoding="async" />
           {#if overlay.playerName}
             <div class="ov-break-sub"><strong>{overlay.playerName}</strong></div>
           {/if}
