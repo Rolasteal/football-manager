@@ -406,6 +406,7 @@
       '/assets/match/Inizio_secondo_tempo.png',
       '/assets/match/Fine_partita.png',
       '/assets/match/MVP.png',
+      '/assets/match/Autogol.png',
       '/assets/match/Rigore_sbagliato_alto.png',
       '/assets/match/Rigore_sbagliato_fuori.png',
       '/assets/match/Rigore_sbagliato_fuori2.png',
@@ -781,7 +782,7 @@
         class:o-red={overlay.kind === 'red'}
         class:o-pen={overlay.kind === 'penalty'}
         class:o-mvp={overlay.kind === 'mvp'}
-        class:o-break={overlay.kind === 'half_time' || overlay.kind === 'full_time' || overlay.kind === 'kickoff' || overlay.kind === 'second_half' || overlay.kind === 'penalty_outcome'}
+        class:o-break={overlay.kind === 'half_time' || overlay.kind === 'full_time' || overlay.kind === 'kickoff' || overlay.kind === 'second_half' || overlay.kind === 'penalty_outcome' || overlay.kind === 'own_goal'}
       >
         {#if overlay.kind === 'goal'}
           <img class="ov-goal-img" src="/assets/match/Gol.png" alt="Gol" />
@@ -794,15 +795,11 @@
           {/if}
           <div class="ov-score">{homeScore} – {awayScore}</div>
         {:else if overlay.kind === 'own_goal'}
-          <img class="ov-goal-img" src="/assets/match/Gol.png" alt="Autogol" />
-          <div class="ov-goal-text ov-own-text">AUTOGOL</div>
+          <div class="ov-break-fallback">CLAMOROSO AUTOGOL</div>
+          <img class="ov-break-img" src="/assets/match/Autogol.png" alt="Clamoroso autogol" decoding="async" />
           {#if overlay.playerName}
-            <div class="ov-scorer">{overlay.playerName}</div>
+            <div class="ov-break-sub"><strong>{overlay.playerName}</strong>{#if overlay.teamName} — a favore di {overlay.teamName}{/if} · {homeScore} – {awayScore}</div>
           {/if}
-          {#if overlay.teamName}
-            <div class="ov-team">a favore di {overlay.teamName}</div>
-          {/if}
-          <div class="ov-score">{homeScore} – {awayScore}</div>
         {:else if overlay.kind === 'yellow'}
           <img class="ov-ref-img" src="/assets/match/Cartellino_giallo.png" alt="Cartellino giallo" />
           <div class="ov-card-text">AMMONIZIONE</div>
@@ -1494,21 +1491,6 @@
   @keyframes fadeUp {
     from { opacity: 0; transform: translateY(20px); }
     to { opacity: 1; transform: translateY(0); }
-  }
-
-  /* --- AUTOGOL (sfondo rossastro, testo rosso) --- */
-  .overlay.o-own {
-    background:
-      radial-gradient(ellipse 80% 60% at 50% 50%, rgba(220, 38, 38, 0.30), transparent 60%),
-      radial-gradient(ellipse at center, rgba(0, 0, 0, 0.93) 40%, rgba(0, 0, 0, 0.99) 100%);
-  }
-  .ov-own-text {
-    color: transparent;
-    background: linear-gradient(180deg, #fecaca 0%, #f87171 35%, #b91c1c 100%);
-    -webkit-background-clip: text;
-    background-clip: text;
-    -webkit-text-fill-color: transparent;
-    filter: drop-shadow(0 8px 40px rgba(220, 38, 38, 0.55));
   }
 
   /* --- CARTELLINI (arbitro PNG) --- */
