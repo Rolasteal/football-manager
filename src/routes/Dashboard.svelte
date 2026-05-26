@@ -2,10 +2,12 @@
   import { push } from 'svelte-spa-router'
   import { onMount } from 'svelte'
   import AppShell from '$lib/AppShell.svelte'
-  import { careerStore } from '$state/career.svelte'
+  import { careerStore, persistActiveCareer } from '$state/career.svelte'
   import { computeStandings } from '$engine/competition/standings'
   import { calcOverall } from '$engine/gen/player'
   import { ensureClubFinances, fmtMoney, cashTrend, cashTrendPct } from '$engine/career/finances'
+  import { endOfSeasonAgeTick } from '$engine/career/aging'
+  import { generateId, createRng } from '$engine/gen/rng'
   import type { Fixture } from '$engine/competition/types'
 
   const store = careerStore()
@@ -68,6 +70,7 @@
   let trendPct = $derived(finances ? cashTrendPct(finances, 4) : 0)
 
   let advancing = $state(false)
+  let startingNewSeason = $state(false)
 
   async function handleAdvance() {
     if (!career || advancing) return
@@ -78,6 +81,36 @@
       push('/match')
     } finally {
       advancing = false
+    }
+  }
+
+  /**
+   * Fase 3.B: avanza tutti i giocatori di 1 anno (aging + ricalc valore) e
+   * prepara la nuova stagione. Chiama endOfSeasonAgeTick + persist.
+   * NB: oggi NON rigenera il calendario per la nuova stagione (lo farà 3.C
+   * insieme alla generazione giovani e al passaggio fixtures). Per ora la
+   * dashboard mostrerà "Nessuna partita rimanente" — è atteso, è solo il
+   * test della curva età.
+   */
+  async function handleStartNewSeason() {
+    if (!career || startingNewSeason) return
+    if (career.season.currentMatchday <= career.season.totalMatchdays) return
+    startingNewSeason = true
+    try {
+      const prevYear = career.season.year
+      const rngNews = createRng((career.seed ^ prevYear ^ 0x5EA50) >>> 0)
+      const processed = endOfSeasonAgeTick(career)
+      career.news.unshift({
+        id: generateId(rngNews),
+        date: `${career.season.year}-07-01`,
+        kind: 'board',
+        title: `Stagione ${prevYear}/${(prevYear + 1).toString().slice(2)} conclusa`,
+        body: `Età avanzata per ${processed} giocatori. Calendario nuova stagione in arrivo (Fase 3.C).`,
+        read: false,
+      })
+      await persistActiveCareer()
+    } finally {
+      startingNewSeason = false
     }
   }
 
@@ -135,13 +168,24 @@
           {/if}
         </div>
         <div class="hero-r">
-          <button
-            class="btn-gold big"
-            disabled={advancing || !nextFixture || career.season.currentMatchday > career.season.totalMatchdays}
-            onclick={handleAdvance}
-          >
-            ▶ Vai alla partita
-          </button>
+          {#if career.season.currentMatchday > career.season.totalMatchdays}
+            <button
+              class="btn-gold big"
+              disabled={startingNewSeason}
+              onclick={handleStartNewSeason}
+              title="Avanza i giocatori di 1 anno (crescita/declino) e inizia la nuova stagione"
+            >
+              {startingNewSeason ? '...' : '▶ Inizia Nuova Stagione'}
+            </button>
+          {:else}
+            <button
+              class="btn-gold big"
+              disabled={advancing || !nextFixture}
+              onclick={handleAdvance}
+            >
+              ▶ Vai alla partita
+            </button>
+          {/if}
         </div>
       </section>
 
