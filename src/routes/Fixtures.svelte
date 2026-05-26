@@ -66,26 +66,42 @@
         {@const isHome = f.homeId === myId}
         {@const oppId = isHome ? f.awayId : f.homeId}
         {@const v = verdict(f)}
-        <div
-          class="row"
-          class:current={f.matchday === career.season.currentMatchday}
-          class:played={f.status === 'played'}
-        >
-          <span class="md">G{f.matchday}</span>
-          <span class="date">{fmtDate(f.date)}</span>
-          <span class="venue">{isHome ? 'CASA' : 'TRAS'}</span>
-          <span class="opp">
-            <span class="crest-mini" style="--c1: {colors(oppId).c1}; --c2: {colors(oppId).c2};">{teamShort(oppId)}</span>
-            <span class="opp-name">{teamName(oppId)}</span>
-          </span>
-          {#if f.status === 'played' && f.result}
-            <span class="score">{f.result.homeScore} - {f.result.awayScore}</span>
-            <span class="verdict v-{v}">{v === 'win' ? 'V' : v === 'loss' ? 'P' : 'N'}</span>
-          {:else}
+        {#if f.status === 'played'}
+          <button
+            class="row row-btn"
+            class:current={f.matchday === career.season.currentMatchday}
+            class:played={true}
+            onclick={() => push(`/match-report/${f.id}`)}
+            title="Apri report partita"
+          >
+            <span class="md">G{f.matchday}</span>
+            <span class="date">{fmtDate(f.date)}</span>
+            <span class="venue">{isHome ? 'CASA' : 'TRAS'}</span>
+            <span class="opp">
+              <span class="crest-mini" style="--c1: {colors(oppId).c1}; --c2: {colors(oppId).c2};">{teamShort(oppId)}</span>
+              <span class="opp-name">{teamName(oppId)}</span>
+            </span>
+            {#if f.result}
+              <span class="score">{f.result.homeScore} - {f.result.awayScore}</span>
+              <span class="verdict v-{v}">{v === 'win' ? 'V' : v === 'loss' ? 'P' : 'N'}</span>
+            {/if}
+          </button>
+        {:else}
+          <div
+            class="row"
+            class:current={f.matchday === career.season.currentMatchday}
+          >
+            <span class="md">G{f.matchday}</span>
+            <span class="date">{fmtDate(f.date)}</span>
+            <span class="venue">{isHome ? 'CASA' : 'TRAS'}</span>
+            <span class="opp">
+              <span class="crest-mini" style="--c1: {colors(oppId).c1}; --c2: {colors(oppId).c2};">{teamShort(oppId)}</span>
+              <span class="opp-name">{teamName(oppId)}</span>
+            </span>
             <span class="score muted">—</span>
             <span class="verdict v-pending">–</span>
-          {/if}
-        </div>
+          </div>
+        {/if}
       {/each}
     </div>
   {/if}
@@ -137,6 +153,22 @@
     padding-left: 15px;
   }
   .row.played { color: #d4cfc1; }
+  .row-btn {
+    width: 100%;
+    background: transparent;
+    border: none;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+  .row-btn:hover {
+    background: rgba(252, 211, 77, 0.08) !important;
+  }
+  .row-btn:focus-visible {
+    outline: 1px solid rgba(252, 211, 77, 0.5);
+    outline-offset: -1px;
+  }
 
   .md {
     color: #fcd34d;

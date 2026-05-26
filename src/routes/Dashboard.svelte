@@ -176,12 +176,15 @@
           {@const oppGoals = isHome ? lastFixture.result.awayScore : lastFixture.result.homeScore}
           {@const oppId = isHome ? lastFixture.awayId : lastFixture.homeId}
           {@const verdict = myGoals > oppGoals ? 'win' : myGoals < oppGoals ? 'loss' : 'draw'}
-          <div class="result-row">
-            <span class="verdict v-{verdict}">{verdict === 'win' ? 'V' : verdict === 'loss' ? 'P' : 'N'}</span>
-            <span class="score">{lastFixture.result.homeScore} - {lastFixture.result.awayScore}</span>
-            <span class="opp">{isHome ? 'vs' : '@'} {teamName(oppId)}</span>
-          </div>
-          <div class="date small">Giornata {lastFixture.matchday} · {fmtDate(lastFixture.date)}</div>
+          <button type="button" class="result-btn" onclick={() => push(`/match-report/${lastFixture!.id}`)} title="Apri report partita">
+            <div class="result-row">
+              <span class="verdict v-{verdict}">{verdict === 'win' ? 'V' : verdict === 'loss' ? 'P' : 'N'}</span>
+              <span class="score">{lastFixture.result.homeScore} - {lastFixture.result.awayScore}</span>
+              <span class="opp">{isHome ? 'vs' : '@'} {teamName(oppId)}</span>
+              <span class="open-icon">→</span>
+            </div>
+            <div class="date small">Giornata {lastFixture.matchday} · {fmtDate(lastFixture.date)}</div>
+          </button>
         {:else}
           <div class="muted">Nessuna partita ancora giocata.</div>
         {/if}
@@ -300,6 +303,35 @@
     font-weight: 700;
   }
 
+  .result-btn {
+    background: transparent;
+    border: 1px dashed transparent;
+    border-radius: 8px;
+    padding: 8px 10px;
+    margin: -8px -10px;
+    width: calc(100% + 20px);
+    text-align: left;
+    cursor: pointer;
+    color: inherit;
+    font: inherit;
+    transition: all 0.15s;
+  }
+  .result-btn:hover {
+    background: rgba(252, 211, 77, 0.06);
+    border-color: rgba(252, 211, 77, 0.30);
+  }
+  .open-icon {
+    margin-left: auto;
+    color: #fcd34d;
+    font-size: 18px;
+    font-weight: 800;
+    opacity: 0.5;
+    transition: opacity 0.15s, transform 0.15s;
+  }
+  .result-btn:hover .open-icon {
+    opacity: 1;
+    transform: translateX(2px);
+  }
   .result-row {
     display: flex; align-items: center; gap: 14px;
   }
