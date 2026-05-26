@@ -11,7 +11,7 @@
   const store = careerStore()
   let career = $derived(store.career)
 
-  type OverlayKind = 'goal' | 'own_goal' | 'yellow' | 'red' | 'half_time' | 'full_time' | 'kickoff' | 'second_half' | 'penalty' | 'penalty_outcome' | 'mvp'
+  type OverlayKind = 'goal' | 'own_goal' | 'yellow' | 'red' | 'half_time' | 'full_time' | 'kickoff' | 'second_half' | 'penalty' | 'penalty_outcome' | 'mvp' | 'pagelle'
   interface OverlayPayload {
     kind: OverlayKind
     side?: 'home' | 'away' | null
@@ -48,6 +48,123 @@
   let streamEl: HTMLDivElement | undefined = $state()
   let timer: ReturnType<typeof setTimeout> | null = null
   let overlayTimer: ReturnType<typeof setTimeout> | null = null
+
+  // ====== AUDIO MATCH ======
+  // Stato muted persistito in localStorage. L'audio del match (boato gol,
+  // fischio arbitro, ammonizioni, ambient tifosi) richiede interazione utente
+  // per partire — il primo click di "Riprendi" o "Velocità" sblocca il
+  // contesto. Se l'autoplay viene rifiutato dal browser, fail silent.
+  let muted = $state<boolean>((() => {
+    try { return localStorage.getItem('fm.match.muted') === '1' } catch { return false }
+  })())
+  const audioCache = new Map<string, HTMLAudioElement>()
+  function getAudio(path: string): HTMLAudioElement {
+    let a = audioCache.get(path)
+    if (!a) {
+      a = new Audio(path)
+      a.preload = 'auto'
+      audioCache.set(path, a)
+    }
+    return a
+  }
+  function playAudio(path: string, volume = 0.7) {
+    if (muted) return
+    try {
+      const a = getAudio(path)
+      a.volume = Math.max(0, Math.min(1, volume))
+      a.currentTime = 0
+      a.play().catch(() => {})
+    } catch {}
+  }
+  /** Triplice fischio finale (fischio.mp3 ripetuto a 280ms di distanza). */
+  function playWhistleTriple(volume = 0.8) {
+    if (muted) return
+    playAudio('/assets/audio/fischio.mp3', volume)
+    setTimeout(() => playAudio('/assets/audio/fischio.mp3', volume), 280)
+    setTimeout(() => playAudio('/assets/audio/fischio.mp3', volume), 560)
+  }
+  /** Ambient random scelto dal pool (tifosi 1/2/5/6/9) — volume basso. */
+  const AMBIENT_POOL = ['/assets/audio/tifosi.mp3', '/assets/audio/tifosi2.mp3', '/assets/audio/tifosi5.mp3', '/assets/audio/tifosi6.mp3', '/assets/audio/tifosi9.mp3']
+  function playRandomAmbient() {
+    if (muted) return
+    const pick = AMBIENT_POOL[Math.floor(Math.random() * AMBIENT_POOL.length)]
+    playAudio(pick, 0.4)
+  }
+  // tifosi7.mp3 va riprodotto 1× per tempo a minuto random.
+  // Schedule deterministico al primo render così non cambia tra reload.
+  let ambient1Min = 0
+  let ambient2Min = 0
+  let ambient1Played = false
+  let ambient2Played = false
+  function scheduleAmbients() {
+    // Primo tempo: minuto 12-37, secondo: 55-80
+    ambient1Min = 12 + Math.floor(Math.random() * 26)
+    ambient2Min = 55 + Math.floor(Math.random() * 26)
+  }
+  function maybePlayAmbientForMinute(min: number) {
+    if (muted) return
+    if (!ambient1Played && min >= ambient1Min && min < 45) {
+      ambient1Played = true
+      playAudio('/assets/audio/tifosi7.mp3', 0.45)
+    } else if (!ambient2Played && min >= ambient2Min) {
+      ambient2Played = true
+      playAudio('/assets/audio/tifosi7.mp3', 0.45)
+    }
+  }
+  function playEventSound(ev: MatchEvent) {
+    if (muted) return
+    switch (ev.kind) {
+      case 'kickoff':
+        // minuto 0 = entrata in campo, minuto 46 = ripresa con fischio
+        if (ev.minute === 0) playAudio('/assets/audio/quando_entrano_in_campo.mp3', 0.75)
+        else playAudio('/assets/audio/fischio.mp3', 0.7)
+        break
+      case 'half_time':
+        playAudio('/assets/audio/fischio.mp3', 0.8)
+        break
+      case 'full_time':
+        playWhistleTriple(0.85)
+        // dopo i 3 fischi, applausi
+        setTimeout(() => playAudio('/assets/audio/applausi.mp3', 0.55), 1200)
+        break
+      case 'goal':
+        playAudio('/assets/audio/tifosi3.mp3', 0.8)
+        break
+      case 'own_goal':
+        playAudio('/assets/audio/tifosi3.mp3', 0.55)  // più smorzato (amaro)
+        break
+      case 'yellow_card':
+        playAudio('/assets/audio/tifosi4.mp3', 0.7)
+        playAudio('/assets/audio/fischio.mp3', 0.35)
+        break
+      case 'red_card':
+        playAudio('/assets/audio/tifosi8.mp3', 0.8)
+        setTimeout(() => playAudio('/assets/audio/fischio.mp3', 0.5), 300)
+        break
+      case 'penalty':
+        playAudio('/assets/audio/fischio.mp3', 0.55)  // fischio assegnazione
+        break
+      case 'save':
+        // Rigore parato → mezzo applauso di sollievo
+        if (isPenaltyOutcomeNote(ev.note)) playAudio('/assets/audio/applausi.mp3', 0.5)
+        break
+      case 'foul':
+        playAudio('/assets/audio/fischio.mp3', 0.4)
+        break
+      case 'corner':
+        // 25% chance ambient random
+        if (Math.random() < 0.25) playRandomAmbient()
+        break
+    }
+  }
+  function toggleMute() {
+    muted = !muted
+    try { localStorage.setItem('fm.match.muted', muted ? '1' : '0') } catch {}
+    // Ferma tutto se appena mutato
+    if (muted) {
+      for (const a of audioCache.values()) { try { a.pause() } catch {} }
+    }
+  }
 
   // ====== CRONOMETRO ANIMATO ======
   // Tra un evento e l'altro avanziamo il clock con requestAnimationFrame
@@ -111,6 +228,7 @@
     penalty: 2600,
     penalty_outcome: 3500,
     mvp: 6500,
+    pagelle: 3500,
   }
 
   // Pre-evento "suspense": qualcosa sta per accadere
@@ -455,6 +573,7 @@
       '/assets/match/Fine_partita.png',
       '/assets/match/MVP.png',
       '/assets/match/Autogol.png',
+      '/assets/match/Pagelle.png',
       '/assets/match/Rigore_sbagliato_alto.png',
       '/assets/match/Rigore_sbagliato_fuori.png',
       '/assets/match/Rigore_sbagliato_fuori2.png',
@@ -477,6 +596,8 @@
       img.onerror = () => resolve()  // file mancante → continua comunque
       img.src = src
     })))
+    // Schedula gli ambient "tifosi7" (1× per tempo a minuto random)
+    scheduleAmbients()
     try {
       // Avanza la giornata (simula tutte le partite, trova la mia)
       const adv = advanceMatchday(career)
@@ -527,6 +648,11 @@
     if (overlayTimer) { clearTimeout(overlayTimer); overlayTimer = null }
     if (suspenseTimer) { clearTimeout(suspenseTimer); suspenseTimer = null }
     stopClockAnim()
+    // Stop tutti gli audio in riproduzione e libera la cache
+    for (const a of audioCache.values()) {
+      try { a.pause(); a.src = '' } catch {}
+    }
+    audioCache.clear()
   })
 
   /** True se il `note` qualifica l'evento come esito specifico di un rigore
@@ -601,9 +727,20 @@
     overlayTimer = setTimeout(() => {
       overlay = null
       overlayTimer = null
-      // Dopo la slide MVP, mostra il Report post-partita (pagelle + marcatori + stats).
-      phase = 'report'
+      // Dopo la slide MVP, mostra la slide cinematografica "PAGELLE", poi
+      // passa alla fase report (pagelle + marcatori + stats + voti finali).
+      triggerPagelleOverlay()
     }, OVERLAY_MS.mvp)
+  }
+
+  /** Slide intermedia "PAGELLE" tra MVP e schermata report. */
+  function triggerPagelleOverlay() {
+    overlay = { kind: 'pagelle' }
+    overlayTimer = setTimeout(() => {
+      overlay = null
+      overlayTimer = null
+      phase = 'report'
+    }, OVERLAY_MS.pagelle)
   }
 
   function tickReplay() {
@@ -651,6 +788,9 @@
       goalFlash = true
       setTimeout(() => goalFlash = false, 800)
     }
+    // Audio: trigger event-specifico + check ambient schedulato per il minuto
+    playEventSound(ev)
+    maybePlayAmbientForMinute(ev.minute)
     autoscroll()
     if (maybeOpenOverlay(ev)) return
     // Subito al prossimo tick (sarà lui ad avviare il cronometro)
@@ -928,7 +1068,7 @@
         class:o-red={overlay.kind === 'red'}
         class:o-pen={overlay.kind === 'penalty'}
         class:o-mvp={overlay.kind === 'mvp'}
-        class:o-break={overlay.kind === 'half_time' || overlay.kind === 'full_time' || overlay.kind === 'kickoff' || overlay.kind === 'second_half' || overlay.kind === 'penalty_outcome' || overlay.kind === 'own_goal'}
+        class:o-break={overlay.kind === 'half_time' || overlay.kind === 'full_time' || overlay.kind === 'kickoff' || overlay.kind === 'second_half' || overlay.kind === 'penalty_outcome' || overlay.kind === 'own_goal' || overlay.kind === 'pagelle'}
       >
         {#if overlay.kind === 'goal'}
           <img class="ov-goal-img" src="/assets/match/Gol.png" alt="Gol" />
@@ -982,6 +1122,10 @@
           {#if overlay.playerName}
             <div class="ov-break-sub"><strong>{overlay.playerName}</strong></div>
           {/if}
+        {:else if overlay.kind === 'pagelle'}
+          <div class="ov-break-fallback">PAGELLE</div>
+          <img class="ov-break-img" src="/assets/match/Pagelle.png" alt="Pagelle" decoding="async" />
+          <div class="ov-break-sub">I voti della partita</div>
         {:else if overlay.kind === 'mvp'}
           <img class="ov-break-img" src="/assets/match/MVP.png" alt="MVP" />
           {#if overlay.mvpId}
@@ -1299,6 +1443,7 @@
     <footer class="controls">
       {#if phase === 'report'}
         <button class="ctrl" onclick={backToLive}>↩ Cronaca</button>
+        <button class="ctrl mute-btn" onclick={toggleMute} title={muted ? 'Audio off' : 'Audio on'}>{muted ? '🔇' : '🔊'}</button>
         <button class="btn-gold" onclick={backToDashboard}>✓ Torna alla Dashboard</button>
       {:else if !finished}
         <button class="ctrl" onclick={togglePause}>{playing ? '⏸ Pausa' : '▶ Riprendi'}</button>
@@ -1308,8 +1453,10 @@
             <button class="speed-btn" class:active={speed === s} onclick={() => setSpeed(s)}>{s}x</button>
           {/each}
         </div>
+        <button class="ctrl mute-btn" onclick={toggleMute} title={muted ? 'Audio off' : 'Audio on'}>{muted ? '🔇' : '🔊'}</button>
         <button class="ctrl skip" onclick={skipToEnd}>⏭ Salta al risultato</button>
       {:else}
+        <button class="ctrl mute-btn" onclick={toggleMute} title={muted ? 'Audio off' : 'Audio on'}>{muted ? '🔇' : '🔊'}</button>
         <button class="btn-gold" onclick={backToDashboard}>✓ Torna alla Dashboard</button>
       {/if}
     </footer>
@@ -1546,6 +1693,12 @@
     border-top: 1px solid rgba(252, 211, 77, 0.15);
     flex-wrap: wrap;
     flex-shrink: 0;
+  }
+  .ctrl.mute-btn {
+    padding: 10px 12px;
+    font-size: 16px;
+    line-height: 1;
+    min-width: 44px;
   }
   .ctrl {
     background: rgba(0, 0, 0, 0.5);
