@@ -181,13 +181,17 @@
   function computeLiveRatings(events: MatchEvent[]): Record<EntityId, number> {
     const r: Record<EntityId, number> = {}
     const subIn = new Set<EntityId>()
+    // V2 voti (vedi memoria [[project-voti-fantacalcio]]): voto base 5.5
+    // (era 6.0) — un giocatore "anonimo" senza eventi ha 5.5 stile pagella
+    // fantacalcio reale (non sufficienza piena finché non fa qualcosa).
+    const BASE = 5.5
     const adj = (id: EntityId | undefined, delta: number) => {
       if (!id) return
-      if (r[id] === undefined) r[id] = 6.0
+      if (r[id] === undefined) r[id] = BASE
       r[id] = Math.max(4, Math.min(10, r[id] + delta))
     }
     const touch = (id: EntityId | undefined) => {
-      if (id && r[id] === undefined) r[id] = 6.0
+      if (id && r[id] === undefined) r[id] = BASE
     }
     for (const ev of events) {
       touch(ev.playerId)
@@ -203,12 +207,12 @@
         case 'pass':           adj(ev.playerId, +0.02); break
       }
     }
-    // Post-pass jitter sui sub IN ancora a 6.0 esatto: voti differenziati
-    // (5.7-6.3) basati su hash deterministic dell'id — stabili tra reload.
+    // Jitter sui sub IN ancora alla base esatta: voti differenziati 5.0-6.0
+    // (bias ±0.5) basati su hash deterministic dell'id — stabili tra reload.
     for (const id of subIn) {
-      if (r[id] === undefined || r[id] === 6.0) {
-        const bias = (hashFloat(id) - 0.5) * 0.6  // [-0.3, +0.3]
-        r[id] = Math.max(4, Math.min(10, 6.0 + Math.round(bias * 10) / 10))
+      if (r[id] === undefined || r[id] === BASE) {
+        const bias = (hashFloat(id) - 0.5) * 1.0  // [-0.5, +0.5]
+        r[id] = Math.max(4, Math.min(10, BASE + Math.round(bias * 10) / 10))
       }
     }
     return r
@@ -218,7 +222,7 @@
 
   function rating(id: EntityId): number {
     const v = liveRatings[id]
-    return v === undefined ? 6.0 : v
+    return v === undefined ? 5.5 : v
   }
   function ratingClass(v: number): string {
     if (v >= 7.5) return 'r-top'
@@ -294,6 +298,47 @@
         }
       }
     }
+
+    // ===== V2: bonus capitano + clean sheet =====
+    // (vedi memoria [[project-voti-fantacalcio]])
+
+    // Bonus capitano: +0.2 al capitano del MIO club se titolare in questa partita.
+    // Altre squadre non hanno tactics.captainId definito (per ora — Fase 3 club mgmt).
+    const myCaptainId = career?.club?.tactics?.captainId
+    if (myCaptainId && (homeLineup?.starters.includes(myCaptainId) || awayLineup?.starters.includes(myCaptainId))) {
+      adj(myCaptainId, +0.2)
+    }
+
+    // Clean sheet: solo a fine partita (events contiene full_time). GK +0.5,
+    // DEF +0.3 — applicato ai titolari + sub IN (di ruolo) della squadra che
+    // chiude a 0 gol subiti. Convenzione: ev.side è sempre il team che segna
+    // (anche per own_goal: l'engine inverte). Quindi home subisce = side='away'.
+    const isFinished = events.some(e => e.kind === 'full_time')
+    if (isFinished) {
+      let homeConceded = 0
+      let awayConceded = 0
+      const subInSet = new Set<EntityId>()
+      for (const ev of events) {
+        if ((ev.kind === 'goal' || ev.kind === 'own_goal')) {
+          if (ev.side === 'away') homeConceded++
+          if (ev.side === 'home') awayConceded++
+        }
+        if (ev.kind === 'substitution' && ev.secondaryPlayerId) subInSet.add(ev.secondaryPlayerId)
+      }
+      const applyCleanSheet = (lineup: Lineup | null, conceded: number) => {
+        if (!lineup || conceded > 0) return
+        const apply = (pid: EntityId) => {
+          const macro = macroRole(pid)
+          if (macro === 'GK')  adj(pid, +0.5)
+          else if (macro === 'DEF') adj(pid, +0.3)
+        }
+        for (const pid of lineup.starters) apply(pid)
+        for (const pid of lineup.bench) if (subInSet.has(pid)) apply(pid)
+      }
+      applyCleanSheet(homeLineup, homeConceded)
+      applyCleanSheet(awayLineup, awayConceded)
+    }
+
     return r
   }
 
@@ -787,6 +832,29 @@
     phase = 'live'
   }
 
+  /** V2: nel report usiamo i voti finali calcolati dall'engine (`result.ratings`)
+   *  invece di quelli derivati live da `shown[]` — l'engine ha info aggiuntive
+   *  (es. forma fisica, contributo difensivo) che i live non possono dedurre. */
+  function ratingForReport(id: EntityId): number {
+    const fromEngine = result?.ratings?.[id]
+    if (fromEngine !== undefined) return Math.max(1, Math.min(10, fromEngine))
+    return rating(id)
+  }
+  function totalForReport(id: EntityId): number {
+    return ratingForReport(id) + bonusOf(id)
+  }
+
+  /** Voto medio squadra (titolari + sub IN) usando i voti finali engine.
+   *  Esclude chi non è mai entrato in campo (bench non sostituiti). */
+  function teamAvgRating(lineup: Lineup | null): number {
+    if (!lineup) return 0
+    const ids: EntityId[] = [...lineup.starters]
+    for (const pid of lineup.bench) if (badgeOf(pid).subIn) ids.push(pid)
+    if (ids.length === 0) return 0
+    const sum = ids.reduce((acc, id) => acc + totalForReport(id), 0)
+    return sum / ids.length
+  }
+
   function eventClass(ev: MatchEvent): string {
     if (ev.kind === 'goal') return 'ev-goal'
     if (ev.kind === 'yellow_card') return 'ev-yellow'
@@ -1012,6 +1080,7 @@
               <header class="rep-team-head" style="--c1: {colors(myFixture.homeId).c1}; --c2: {colors(myFixture.homeId).c2};">
                 <span class="crest-sm">{teamShort(myFixture.homeId)}</span>
                 <span class="rt-name">{teamName(myFixture.homeId)}</span>
+                <span class="rt-avg {ratingClass(teamAvgRating(homeLineup))}" title="Voto medio squadra">⌀ {fmtRating(teamAvgRating(homeLineup))}</span>
               </header>
               <ul class="rep-rate-list">
                 {#each allPlayersOf(homeLineup) as pid (pid)}
@@ -1019,6 +1088,7 @@
                     <span class="rr-role">{roleLabel(pid)}</span>
                     <span class="rr-name">
                       {lastNameOf(pid)}
+                      {#if career?.club?.tactics?.captainId === pid}<span class="badge-captain" title="Capitano">C</span>{/if}
                       {#each Array(badgeOf(pid).goals) as _, gi (gi)}<span class="badge-ball" title="Gol">⚽</span>{/each}
                       {#each Array(badgeOf(pid).assists) as _, ai (ai)}<span class="badge-tag tag-assist" title="Assist">Ass.</span>{/each}
                       {#each Array(badgeOf(pid).ownGoals) as _, oi (oi)}<span class="badge-tag tag-own" title="Autogol">Aut</span>{/each}
@@ -1027,9 +1097,9 @@
                       {#if badgeOf(pid).subOut}<span class="sub-arrow sub-out" title="Sostituito">▼</span>{/if}
                       {#if badgeOf(pid).subIn}<span class="sub-arrow sub-in" title="Entrato in campo">▲</span>{/if}
                     </span>
-                    <span class="rr-rate {ratingClass(rating(pid))}">{fmtRating(rating(pid))}</span>
+                    <span class="rr-rate {ratingClass(ratingForReport(pid))}">{fmtRating(ratingForReport(pid))}</span>
                     <span class="rr-bonus" class:b-plus={bonusOf(pid) > 0} class:b-minus={bonusOf(pid) < 0}>{fmtBonus(bonusOf(pid)) || '—'}</span>
-                    <span class="rr-total {ratingClass(totalOf(pid))}">{fmtRating(totalOf(pid))}</span>
+                    <span class="rr-total {ratingClass(totalForReport(pid))}">{fmtRating(totalForReport(pid))}</span>
                   </li>
                 {/each}
               </ul>
@@ -1038,6 +1108,7 @@
               <header class="rep-team-head" style="--c1: {colors(myFixture.awayId).c1}; --c2: {colors(myFixture.awayId).c2};">
                 <span class="crest-sm">{teamShort(myFixture.awayId)}</span>
                 <span class="rt-name">{teamName(myFixture.awayId)}</span>
+                <span class="rt-avg {ratingClass(teamAvgRating(awayLineup))}" title="Voto medio squadra">⌀ {fmtRating(teamAvgRating(awayLineup))}</span>
               </header>
               <ul class="rep-rate-list">
                 {#each allPlayersOf(awayLineup) as pid (pid)}
@@ -1045,6 +1116,7 @@
                     <span class="rr-role">{roleLabel(pid)}</span>
                     <span class="rr-name">
                       {lastNameOf(pid)}
+                      {#if career?.club?.tactics?.captainId === pid}<span class="badge-captain" title="Capitano">C</span>{/if}
                       {#each Array(badgeOf(pid).goals) as _, gi (gi)}<span class="badge-ball" title="Gol">⚽</span>{/each}
                       {#each Array(badgeOf(pid).assists) as _, ai (ai)}<span class="badge-tag tag-assist" title="Assist">Ass.</span>{/each}
                       {#each Array(badgeOf(pid).ownGoals) as _, oi (oi)}<span class="badge-tag tag-own" title="Autogol">Aut</span>{/each}
@@ -1053,9 +1125,9 @@
                       {#if badgeOf(pid).subOut}<span class="sub-arrow sub-out" title="Sostituito">▼</span>{/if}
                       {#if badgeOf(pid).subIn}<span class="sub-arrow sub-in" title="Entrato in campo">▲</span>{/if}
                     </span>
-                    <span class="rr-rate {ratingClass(rating(pid))}">{fmtRating(rating(pid))}</span>
+                    <span class="rr-rate {ratingClass(ratingForReport(pid))}">{fmtRating(ratingForReport(pid))}</span>
                     <span class="rr-bonus" class:b-plus={bonusOf(pid) > 0} class:b-minus={bonusOf(pid) < 0}>{fmtBonus(bonusOf(pid)) || '—'}</span>
-                    <span class="rr-total {ratingClass(totalOf(pid))}">{fmtRating(totalOf(pid))}</span>
+                    <span class="rr-total {ratingClass(totalForReport(pid))}">{fmtRating(totalForReport(pid))}</span>
                   </li>
                 {/each}
               </ul>
@@ -1997,6 +2069,23 @@
     border: 1px solid rgba(220, 38, 38, 0.7);
   }
 
+  /* Badge capitano "C" — cerchio oro accanto al cognome. */
+  .badge-captain {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 14px; height: 14px;
+    margin-left: 4px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, #fcd34d, #b45309);
+    color: #1c1917;
+    font-size: 9px;
+    font-weight: 900;
+    line-height: 1;
+    vertical-align: middle;
+    box-shadow: 0 1px 4px rgba(252, 211, 77, 0.4);
+  }
+
   /* Frecce sostituzione: verde ▲ per chi entra, rossa ▼ per chi esce.
      L'uscito resta nella sezione titolari (con freccia rossa), l'entrato
      resta nella sezione panchina (con freccia verde) — niente swap. */
@@ -2344,6 +2433,17 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    flex: 1;
+    min-width: 0;
+  }
+  .rt-avg {
+    font-weight: 800;
+    font-size: 13px;
+    padding: 2px 8px;
+    border-radius: 6px;
+    font-variant-numeric: tabular-nums;
+    border: 1px solid rgba(252, 211, 77, 0.30);
+    background: rgba(0, 0, 0, 0.35);
   }
   .rep-rate-list {
     list-style: none;
