@@ -17,6 +17,8 @@ import { endOfSeasonAgeTick } from './aging'
 import { generateYouthPoolForSeason, type YouthIntakeReport } from './youth'
 import { buildAllSchedules } from '$engine/gen/schedule'
 import { refreshMyClubWageBudget, applyContractEndOfSeason } from './contracts'
+import { applyEndOfSeasonFinances, type EndOfSeasonPrizesReport } from './prizes'
+import { fmtMoney } from './finances'
 
 export interface NewSeasonReport {
   previousYear: number
@@ -24,6 +26,8 @@ export interface NewSeasonReport {
   playersAged: number
   youth: YouthIntakeReport
   fixturesGenerated: number
+  /** Premi piazzamento + UEFA + sponsor rinegoziazione (Fase 3.F). null se non applicabile. */
+  prizes: EndOfSeasonPrizesReport | null
 }
 
 /**
@@ -52,6 +56,14 @@ export function startNewSeason(career: Career): NewSeasonReport | null {
 
   const previousYear = career.season.year
 
+  // 0) Fase 3.F: premi end-of-season PRIMA dell'aging.
+  //    Ci servono i fixture giocati per calcolare la classifica finale, e
+  //    `currentMatchday > totalMatchdays` (la guard in cima è già garantita).
+  //    Eroga premi piazzamento + UEFA, rinegozia sponsor mio club, mutua
+  //    clubFinances.cash + team.balance. NB: history finanze logga gli importi
+  //    con matchday = totalMatchdays (= ultimo md della stagione conclusa).
+  const prizes = applyEndOfSeasonFinances(career)
+
   // 1) Aging (avanza anche season.year e resetta currentMatchday)
   const playersAged = endOfSeasonAgeTick(career)
   const newYear = career.season.year  // ora è previousYear + 1
@@ -77,6 +89,9 @@ export function startNewSeason(career: Career): NewSeasonReport | null {
   // 5) News riepilogativa principale + 1 news per ogni top prospect
   const rngNews = createRng((career.seed ^ newYear ^ 0x5EA50) >>> 0)
   const newsDate = `${newYear}-07-01`
+  // Data fine stagione (per news premi/sponsor — danno la sensazione di "appena chiusa")
+  const seasonEndDate = `${previousYear + 1}-06-15`
+
   career.news.unshift({
     id: generateId(rngNews),
     date: newsDate,
@@ -99,6 +114,68 @@ export function startNewSeason(career: Career): NewSeasonReport | null {
     })
   }
 
+  // Fase 3.F: news dettagliate sui bonus erogati al mio club
+  if (prizes) {
+    // 1) Premio piazzamento
+    if (prizes.myLeaguePrize > 0) {
+      career.news.unshift({
+        id: generateId(rngNews),
+        date: seasonEndDate,
+        kind: 'board',
+        title: `Premio piazzamento: ${prizes.myFinalPosition}° posto — ${fmtMoney(prizes.myLeaguePrize)}`,
+        body: `La società ha incassato ${fmtMoney(prizes.myLeaguePrize)} dai diritti TV/montepremi per il ${prizes.myFinalPosition}° posto finale.`,
+        read: false,
+      })
+    } else if (prizes.myLeagueTier === 1 && prizes.myFinalPosition > prizes.myLeagueTeams - 3) {
+      // Retrocessione: niente premio piazzamento ma news comunque
+      career.news.unshift({
+        id: generateId(rngNews),
+        date: seasonEndDate,
+        kind: 'board',
+        title: `Retrocessione: ${prizes.myFinalPosition}° posto — nessun premio piazzamento`,
+        body: `Il ${prizes.myFinalPosition}° posto finale comporta la retrocessione: nessun premio dai diritti TV della massima divisione.`,
+        read: false,
+      })
+    }
+
+    // 2) Premio UEFA (se qualificato)
+    if (prizes.myUefaPrize) {
+      const compName =
+        prizes.myUefaPrize.competition === 'UCL' ? 'Champions League' :
+        prizes.myUefaPrize.competition === 'UEL' ? 'Europa League' :
+        'Conference League'
+      career.news.unshift({
+        id: generateId(rngNews),
+        date: seasonEndDate,
+        kind: 'board',
+        title: `Qualificazione ${compName} — premio ${fmtMoney(prizes.myUefaPrize.amount)}`,
+        body: `Il ${prizes.myFinalPosition}° posto in campionato garantisce l'accesso alla ${compName} con un bonus immediato di ${fmtMoney(prizes.myUefaPrize.amount)}.`,
+        read: false,
+      })
+    }
+
+    // 3) Sponsor rinegoziazione (solo se cambiato qualcosa)
+    if (prizes.sponsor.factor !== 1.0) {
+      const pct = Math.round((prizes.sponsor.factor - 1) * 100)
+      const pctStr = pct > 0 ? `+${pct}%` : `${pct}%`
+      const reasonTxt =
+        prizes.sponsor.reason === 'top4_ucl' ? 'Qualificazione Champions: gli sponsor alzano la posta.' :
+        prizes.sponsor.reason === 'top_relegated' ? 'La retrocessione abbatte il valore commerciale del club.' :
+        prizes.sponsor.reason === 'bottom_two_top_league' ? 'Stagione difficile: gli sponsor rivedono al ribasso.' :
+        prizes.sponsor.reason === 'promoted_b' ? 'Promozione in massima serie: nuovi sponsor in fila.' :
+        prizes.sponsor.reason === 'bottom_b' ? 'Stagione mediocre nella seconda divisione.' :
+        ''
+      career.news.unshift({
+        id: generateId(rngNews),
+        date: seasonEndDate,
+        kind: 'board',
+        title: `Sponsor rinegoziato: ${pctStr} → ${fmtMoney(prizes.sponsor.newAnnual)}/anno`,
+        body: `${reasonTxt} Il nuovo accordo annuale passa da ${fmtMoney(prizes.sponsor.previousAnnual)} a ${fmtMoney(prizes.sponsor.newAnnual)}.`,
+        read: false,
+      })
+    }
+  }
+
   // Trim news (cap 50, come al solito)
   if (career.news.length > 50) career.news.length = 50
 
@@ -110,5 +187,6 @@ export function startNewSeason(career: Career): NewSeasonReport | null {
     playersAged,
     youth,
     fixturesGenerated,
+    prizes,
   }
 }
