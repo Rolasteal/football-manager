@@ -38,6 +38,9 @@
   let clockSec = $state(0)
   let playing = $state(true)
   let finished = $state(false)
+  /** Fase della schermata: 'live' = match-body normale, 'report' = pagella post-partita.
+   *  Passa a 'report' quando l'overlay MVP scade (vedi triggerMvpOverlay). */
+  let phase = $state<'live' | 'report'>('live')
   let speed = $state(1)  // 0.5, 1, 2, 4, 8
   let goalFlash = $state(false)
   let overlay = $state<OverlayPayload | null>(null)
@@ -553,6 +556,8 @@
     overlayTimer = setTimeout(() => {
       overlay = null
       overlayTimer = null
+      // Dopo la slide MVP, mostra il Report post-partita (pagelle + marcatori + stats).
+      phase = 'report'
     }, OVERLAY_MS.mvp)
   }
 
@@ -709,6 +714,79 @@
     return ''
   }
 
+  // ====== REPORT POST-PARTITA ======
+  /** Macro-ruolo a partire dalla Position specifica (CB→DEF, AM→MID, ST→ATT, ecc.).
+   *  Replica `role(p)` privato dell'engine per non leakare l'import. */
+  function macroRole(id: EntityId): 'GK' | 'DEF' | 'MID' | 'ATT' {
+    const p = getPlayer(id)
+    if (!p) return 'ATT'
+    switch (p.position) {
+      case 'GK': return 'GK'
+      case 'CB': case 'LB': case 'RB': case 'WB': return 'DEF'
+      case 'DM': case 'CM': case 'AM': case 'LM': case 'RM': return 'MID'
+      default: return 'ATT'
+    }
+  }
+  /** Etichetta breve per il ruolo (1 carattere) — usata nelle pagelle. */
+  function roleLabel(id: EntityId): string {
+    const r = macroRole(id)
+    if (r === 'GK')  return 'P'
+    if (r === 'DEF') return 'D'
+    if (r === 'MID') return 'C'
+    return 'A'
+  }
+
+  interface ReportScorer {
+    side: 'home' | 'away'
+    minute: number
+    playerId: EntityId
+    name: string
+    teamName: string
+    note: 'rigore' | 'autogol' | null
+  }
+
+  /** Estrae i marcatori dagli eventi in ordine cronologico. Distingue rigori
+   *  (note pen_goal_*) e autogol (kind own_goal). Per gli autogol il side è
+   *  già quello del team che ha beneficiato (l'engine inverte); il nome è
+   *  quello del difensore che ha deviato (team opposto). */
+  function getScorerList(events: MatchEvent[]): ReportScorer[] {
+    const out: ReportScorer[] = []
+    for (const ev of events) {
+      if (ev.kind !== 'goal' && ev.kind !== 'own_goal') continue
+      if (!ev.side || !ev.playerId) continue
+      out.push({
+        side: ev.side,
+        minute: ev.minute,
+        playerId: ev.playerId,
+        name: nameOf(ev.playerId),
+        teamName: teamOfSide(ev.side),
+        note: ev.kind === 'own_goal'
+          ? 'autogol'
+          : (ev.note && ev.note.startsWith('pen_goal_') ? 'rigore' : null),
+      })
+    }
+    return out
+  }
+  let scorerList = $derived(getScorerList(shown))
+
+  /** Tutti i giocatori di una lineup (titolari + bench), ordinati per ruolo P→D→C→A. */
+  function allPlayersOf(lineup: Lineup | null): EntityId[] {
+    if (!lineup) return []
+    const all = [...lineup.starters, ...lineup.bench]
+    const order = (id: EntityId) => {
+      const r = macroRole(id)
+      if (r === 'GK')  return 0
+      if (r === 'DEF') return 1
+      if (r === 'MID') return 2
+      return 3
+    }
+    return all.slice().sort((a, b) => order(a) - order(b))
+  }
+
+  function backToLive() {
+    phase = 'live'
+  }
+
   function eventClass(ev: MatchEvent): string {
     if (ev.kind === 'goal') return 'ev-goal'
     if (ev.kind === 'yellow_card') return 'ev-yellow'
@@ -862,6 +940,130 @@
       </div>
     {/if}
 
+    {#if phase === 'report' && homeLineup && awayLineup}
+      <main class="report-body">
+        <section class="card-gold report-scorers">
+          <h3 class="report-h">Marcatori</h3>
+          {#if scorerList.length === 0}
+            <div class="rep-empty">Nessun gol in questa partita</div>
+          {:else}
+            <ul class="rep-scorer-list">
+              {#each scorerList as s (s.minute + ':' + s.playerId)}
+                <li class="rep-scorer" class:home={s.side === 'home'} class:away={s.side === 'away'}>
+                  <span class="rs-min">{s.minute}'</span>
+                  <span class="rs-icon">⚽</span>
+                  <span class="rs-name">{s.name}</span>
+                  {#if s.note === 'autogol'}<span class="rs-note rs-own">aut</span>{/if}
+                  {#if s.note === 'rigore'}<span class="rs-note rs-pen">rig</span>{/if}
+                  <span class="rs-team">{s.teamName}</span>
+                </li>
+              {/each}
+            </ul>
+          {/if}
+        </section>
+
+        <section class="card-gold report-stats">
+          <h3 class="report-h">Statistiche finali</h3>
+          <div class="rep-stats-grid">
+            <div class="rep-stat-row">
+              <span class="rsv">{liveStats.home.possession}%</span>
+              <span class="rsl">Possesso</span>
+              <span class="rsv">{liveStats.away.possession}%</span>
+            </div>
+            <div class="rep-stat-row">
+              <span class="rsv">{liveStats.home.shots}</span>
+              <span class="rsl">Tiri</span>
+              <span class="rsv">{liveStats.away.shots}</span>
+            </div>
+            <div class="rep-stat-row">
+              <span class="rsv">{liveStats.home.shotsOnTarget}</span>
+              <span class="rsl">in porta</span>
+              <span class="rsv">{liveStats.away.shotsOnTarget}</span>
+            </div>
+            <div class="rep-stat-row">
+              <span class="rsv">{liveStats.home.corners}</span>
+              <span class="rsl">Corner</span>
+              <span class="rsv">{liveStats.away.corners}</span>
+            </div>
+            <div class="rep-stat-row">
+              <span class="rsv">{liveStats.home.fouls}</span>
+              <span class="rsl">Falli</span>
+              <span class="rsv">{liveStats.away.fouls}</span>
+            </div>
+            <div class="rep-stat-row">
+              <span class="rsv">{liveStats.home.yellowCards}</span>
+              <span class="rsl">Gialli</span>
+              <span class="rsv">{liveStats.away.yellowCards}</span>
+            </div>
+            {#if liveStats.home.redCards > 0 || liveStats.away.redCards > 0}
+              <div class="rep-stat-row">
+                <span class="rsv">{liveStats.home.redCards}</span>
+                <span class="rsl">Rossi</span>
+                <span class="rsv">{liveStats.away.redCards}</span>
+              </div>
+            {/if}
+          </div>
+        </section>
+
+        <section class="card-gold report-ratings">
+          <h3 class="report-h">Pagelle</h3>
+          <div class="rep-ratings-grid">
+            <div class="rep-team-col">
+              <header class="rep-team-head" style="--c1: {colors(myFixture.homeId).c1}; --c2: {colors(myFixture.homeId).c2};">
+                <span class="crest-sm">{teamShort(myFixture.homeId)}</span>
+                <span class="rt-name">{teamName(myFixture.homeId)}</span>
+              </header>
+              <ul class="rep-rate-list">
+                {#each allPlayersOf(homeLineup) as pid (pid)}
+                  <li class="rep-rate-row" class:is-bench={homeLineup.bench.includes(pid)}>
+                    <span class="rr-role">{roleLabel(pid)}</span>
+                    <span class="rr-name">
+                      {lastNameOf(pid)}
+                      {#each Array(badgeOf(pid).goals) as _, gi (gi)}<span class="badge-ball" title="Gol">⚽</span>{/each}
+                      {#each Array(badgeOf(pid).assists) as _, ai (ai)}<span class="badge-tag tag-assist" title="Assist">Ass.</span>{/each}
+                      {#each Array(badgeOf(pid).ownGoals) as _, oi (oi)}<span class="badge-tag tag-own" title="Autogol">Aut</span>{/each}
+                      {#if badgeOf(pid).yellow}<span class="badge-yellow" title="Ammonito">🟨</span>{/if}
+                      {#if badgeOf(pid).red}<span class="badge-red" title="Espulso">🟥</span>{/if}
+                      {#if badgeOf(pid).subOut}<span class="sub-arrow sub-out" title="Sostituito">▼</span>{/if}
+                      {#if badgeOf(pid).subIn}<span class="sub-arrow sub-in" title="Entrato in campo">▲</span>{/if}
+                    </span>
+                    <span class="rr-rate {ratingClass(rating(pid))}">{fmtRating(rating(pid))}</span>
+                    <span class="rr-bonus" class:b-plus={bonusOf(pid) > 0} class:b-minus={bonusOf(pid) < 0}>{fmtBonus(bonusOf(pid)) || '—'}</span>
+                    <span class="rr-total {ratingClass(totalOf(pid))}">{fmtRating(totalOf(pid))}</span>
+                  </li>
+                {/each}
+              </ul>
+            </div>
+            <div class="rep-team-col">
+              <header class="rep-team-head" style="--c1: {colors(myFixture.awayId).c1}; --c2: {colors(myFixture.awayId).c2};">
+                <span class="crest-sm">{teamShort(myFixture.awayId)}</span>
+                <span class="rt-name">{teamName(myFixture.awayId)}</span>
+              </header>
+              <ul class="rep-rate-list">
+                {#each allPlayersOf(awayLineup) as pid (pid)}
+                  <li class="rep-rate-row" class:is-bench={awayLineup.bench.includes(pid)}>
+                    <span class="rr-role">{roleLabel(pid)}</span>
+                    <span class="rr-name">
+                      {lastNameOf(pid)}
+                      {#each Array(badgeOf(pid).goals) as _, gi (gi)}<span class="badge-ball" title="Gol">⚽</span>{/each}
+                      {#each Array(badgeOf(pid).assists) as _, ai (ai)}<span class="badge-tag tag-assist" title="Assist">Ass.</span>{/each}
+                      {#each Array(badgeOf(pid).ownGoals) as _, oi (oi)}<span class="badge-tag tag-own" title="Autogol">Aut</span>{/each}
+                      {#if badgeOf(pid).yellow}<span class="badge-yellow" title="Ammonito">🟨</span>{/if}
+                      {#if badgeOf(pid).red}<span class="badge-red" title="Espulso">🟥</span>{/if}
+                      {#if badgeOf(pid).subOut}<span class="sub-arrow sub-out" title="Sostituito">▼</span>{/if}
+                      {#if badgeOf(pid).subIn}<span class="sub-arrow sub-in" title="Entrato in campo">▲</span>{/if}
+                    </span>
+                    <span class="rr-rate {ratingClass(rating(pid))}">{fmtRating(rating(pid))}</span>
+                    <span class="rr-bonus" class:b-plus={bonusOf(pid) > 0} class:b-minus={bonusOf(pid) < 0}>{fmtBonus(bonusOf(pid)) || '—'}</span>
+                    <span class="rr-total {ratingClass(totalOf(pid))}">{fmtRating(totalOf(pid))}</span>
+                  </li>
+                {/each}
+              </ul>
+            </div>
+          </div>
+        </section>
+      </main>
+    {:else}
     <main class="match-body">
       {#if homeLineup && awayLineup}
         <section class="formations-pane card-gold">
@@ -1020,9 +1222,13 @@
         </aside>
       </section>
     </main>
+    {/if}
 
     <footer class="controls">
-      {#if !finished}
+      {#if phase === 'report'}
+        <button class="ctrl" onclick={backToLive}>↩ Cronaca</button>
+        <button class="btn-gold" onclick={backToDashboard}>✓ Torna alla Dashboard</button>
+      {:else if !finished}
         <button class="ctrl" onclick={togglePause}>{playing ? '⏸ Pausa' : '▶ Riprendi'}</button>
         <div class="speed">
           <span class="speed-l">Velocità</span>
@@ -1983,5 +2189,233 @@
     .ctrl.skip { margin-left: 0; }
     .ov-card-text { font-size: 36px; }
     .lineups-grid { grid-template-columns: 1fr; gap: 12px; }
+    .rep-ratings-grid { grid-template-columns: 1fr; gap: 12px; }
+  }
+
+  /* ============================================================
+     REPORT POST-PARTITA — pagella stile cinematografico nero+oro
+     ============================================================ */
+  .report-body {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 16px clamp(12px, 3vw, 32px);
+    display: grid;
+    grid-template-columns: minmax(280px, 0.9fr) minmax(0, 1.1fr);
+    grid-template-rows: auto 1fr;
+    grid-template-areas:
+      "scorers stats"
+      "ratings ratings";
+    gap: 14px;
+  }
+  .report-scorers { grid-area: scorers; }
+  .report-stats   { grid-area: stats; }
+  .report-ratings { grid-area: ratings; }
+
+  .report-h {
+    margin: 0 0 10px 0;
+    font-size: 13px;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    color: #fcd34d;
+    border-bottom: 1px solid rgba(252, 211, 77, 0.20);
+    padding-bottom: 6px;
+  }
+
+  /* --- Marcatori --- */
+  .rep-empty {
+    color: #a8a29e;
+    font-style: italic;
+    padding: 18px 6px;
+    text-align: center;
+  }
+  .rep-scorer-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .rep-scorer {
+    display: grid;
+    grid-template-columns: 40px 20px 1fr auto auto;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    border-radius: 8px;
+    background: rgba(0, 0, 0, 0.35);
+    border-left: 3px solid transparent;
+    font-size: 14px;
+  }
+  .rep-scorer.home { border-left-color: rgba(252, 211, 77, 0.6); }
+  .rep-scorer.away { border-left-color: rgba(252, 211, 77, 0.3); }
+  .rs-min { color: #fcd34d; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .rs-icon { font-size: 14px; }
+  .rs-name { font-weight: 700; color: #fef3c7; }
+  .rs-team {
+    color: #a8a29e;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    max-width: 120px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .rs-note {
+    font-size: 10px;
+    padding: 2px 6px;
+    border-radius: 4px;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    font-weight: 700;
+    background: rgba(252, 211, 77, 0.12);
+    color: #fcd34d;
+    border: 1px solid rgba(252, 211, 77, 0.35);
+  }
+  .rs-note.rs-own {
+    background: rgba(220, 38, 38, 0.12);
+    color: #fca5a5;
+    border-color: rgba(220, 38, 38, 0.4);
+  }
+
+  /* --- Stats finali (riusa stile stat-row, layout più ampio) --- */
+  .rep-stats-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .rep-stat-row {
+    display: grid;
+    grid-template-columns: 60px 1fr 60px;
+    align-items: center;
+    padding: 8px 4px;
+    border-bottom: 1px dashed rgba(252, 211, 77, 0.10);
+  }
+  .rep-stat-row:last-child { border-bottom: none; }
+  .rsv {
+    font-weight: 700;
+    font-size: 16px;
+    color: #fef3c7;
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+  }
+  .rsl {
+    text-align: center;
+    color: #a8a29e;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+  }
+
+  /* --- Pagelle --- */
+  .rep-ratings-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+  }
+  .rep-team-col {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+  .rep-team-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    background: linear-gradient(90deg, rgba(0, 0, 0, 0.4), transparent);
+    border-radius: 6px;
+    margin-bottom: 8px;
+  }
+  .rep-team-head .crest-sm {
+    width: 28px; height: 28px;
+    border-radius: 6px;
+    background: linear-gradient(135deg, var(--c1), var(--c2));
+    color: #fff; font-weight: 800; font-size: 10px;
+    display: flex; align-items: center; justify-content: center;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.7);
+  }
+  .rt-name {
+    font-weight: 800;
+    font-size: 13px;
+    color: #fef3c7;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .rep-rate-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .rep-rate-row {
+    display: grid;
+    grid-template-columns: 22px 1fr 46px 44px 50px;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 8px;
+    border-radius: 6px;
+    font-size: 13px;
+    background: rgba(0, 0, 0, 0.20);
+  }
+  .rep-rate-row:nth-child(odd) { background: rgba(0, 0, 0, 0.30); }
+  .rep-rate-row.is-bench { opacity: 0.72; }
+  .rr-role {
+    color: #fcd34d;
+    font-weight: 800;
+    font-size: 10px;
+    text-align: center;
+    border: 1px solid rgba(252, 211, 77, 0.35);
+    border-radius: 4px;
+    padding: 2px 0;
+    background: rgba(252, 211, 77, 0.08);
+  }
+  .rr-name {
+    color: #fef3c7;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+  }
+  .rr-rate, .rr-total {
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    text-align: center;
+    padding: 3px 0;
+    border-radius: 4px;
+    font-size: 13px;
+  }
+  .rr-total {
+    background: rgba(252, 211, 77, 0.08);
+    border: 1px solid rgba(252, 211, 77, 0.25);
+    font-size: 14px;
+  }
+  .rr-bonus {
+    text-align: center;
+    font-weight: 700;
+    font-size: 12px;
+    color: #a8a29e;
+    font-variant-numeric: tabular-nums;
+  }
+  .rr-bonus.b-plus  { color: #4ade80; }
+  .rr-bonus.b-minus { color: #f87171; }
+
+  @media (max-width: 1100px) {
+    .report-body {
+      grid-template-columns: 1fr;
+      grid-template-areas:
+        "scorers"
+        "stats"
+        "ratings";
+    }
   }
 </style>
