@@ -248,10 +248,17 @@ export function simulateMatch(opts: SimulateMatchOptions): MatchResult {
     if (rng.chance(goalProb)) {
       // GOAL
       teamStats.shotsOnTarget++
-      const hasAssist = rng.chance(0.55)
+      // Spec Roberto: l'assist va attribuito SEMPRE quando il gol nasce da un
+      // passaggio di un compagno. NON va attribuito su rigore (gestito da
+      // tryPenalty), autogol (own_goal), azione personale, recupero su errore
+      // avversario, deflessione casuale. In Serie A reale ~80% dei gol da
+      // azione hanno un assist registrato; il restante 20% è azione personale
+      // o recupero. Candidati: tutti tranne il GK (terzini cross, centrali
+      // lanci, mezzali e attaccanti regie).
+      const hasAssist = rng.chance(0.80)
       let assistMan: Player | undefined
       if (hasAssist) {
-        const candidates = side.players.filter(p => p.id !== shooter.id && (role(p) === 'MID' || role(p) === 'ATT'))
+        const candidates = side.players.filter(p => p.id !== shooter.id && p.position !== 'GK')
         if (candidates.length > 0) assistMan = candidates[Math.floor(rng.next() * candidates.length)]
       }
       const ev: MatchEvent = {
