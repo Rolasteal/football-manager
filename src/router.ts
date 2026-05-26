@@ -6,6 +6,7 @@ import Squad from '$routes/Squad.svelte'
 import Fixtures from '$routes/Fixtures.svelte'
 import Standings from '$routes/Standings.svelte'
 import Match from '$routes/Match.svelte'
+import PlayerDetail from '$routes/PlayerDetail.svelte'
 import Settings from '$routes/Settings.svelte'
 import NotFound from '$routes/NotFound.svelte'
 
@@ -17,6 +18,7 @@ export const routes: RouteDefinition = {
   '/fixtures':   Fixtures,
   '/standings':  Standings,
   '/match':      Match,
+  '/player/:id': PlayerDetail,
   '/settings':   Settings,
   // Fallback 404
   '*': NotFound,

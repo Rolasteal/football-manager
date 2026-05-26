@@ -1086,7 +1086,7 @@
                 {#each allPlayersOf(homeLineup) as pid (pid)}
                   <li class="rep-rate-row" class:is-bench={homeLineup.bench.includes(pid)}>
                     <span class="rr-role">{roleLabel(pid)}</span>
-                    <span class="rr-name">
+                    <button type="button" class="rr-name rr-name-btn" onclick={() => push(`/player/${pid}`)} title="Apri dettaglio giocatore">
                       {lastNameOf(pid)}
                       {#if career?.club?.tactics?.captainId === pid}<span class="badge-captain" title="Capitano">C</span>{/if}
                       {#each Array(badgeOf(pid).goals) as _, gi (gi)}<span class="badge-ball" title="Gol">⚽</span>{/each}
@@ -1096,7 +1096,7 @@
                       {#if badgeOf(pid).red}<span class="badge-red" title="Espulso">🟥</span>{/if}
                       {#if badgeOf(pid).subOut}<span class="sub-arrow sub-out" title="Sostituito">▼</span>{/if}
                       {#if badgeOf(pid).subIn}<span class="sub-arrow sub-in" title="Entrato in campo">▲</span>{/if}
-                    </span>
+                    </button>
                     <span class="rr-rate {ratingClass(ratingForReport(pid))}">{fmtRating(ratingForReport(pid))}</span>
                     <span class="rr-bonus" class:b-plus={bonusOf(pid) > 0} class:b-minus={bonusOf(pid) < 0}>{fmtBonus(bonusOf(pid)) || '—'}</span>
                     <span class="rr-total {ratingClass(totalForReport(pid))}">{fmtRating(totalForReport(pid))}</span>
@@ -1114,7 +1114,7 @@
                 {#each allPlayersOf(awayLineup) as pid (pid)}
                   <li class="rep-rate-row" class:is-bench={awayLineup.bench.includes(pid)}>
                     <span class="rr-role">{roleLabel(pid)}</span>
-                    <span class="rr-name">
+                    <button type="button" class="rr-name rr-name-btn" onclick={() => push(`/player/${pid}`)} title="Apri dettaglio giocatore">
                       {lastNameOf(pid)}
                       {#if career?.club?.tactics?.captainId === pid}<span class="badge-captain" title="Capitano">C</span>{/if}
                       {#each Array(badgeOf(pid).goals) as _, gi (gi)}<span class="badge-ball" title="Gol">⚽</span>{/each}
@@ -1124,7 +1124,7 @@
                       {#if badgeOf(pid).red}<span class="badge-red" title="Espulso">🟥</span>{/if}
                       {#if badgeOf(pid).subOut}<span class="sub-arrow sub-out" title="Sostituito">▼</span>{/if}
                       {#if badgeOf(pid).subIn}<span class="sub-arrow sub-in" title="Entrato in campo">▲</span>{/if}
-                    </span>
+                    </button>
                     <span class="rr-rate {ratingClass(ratingForReport(pid))}">{fmtRating(ratingForReport(pid))}</span>
                     <span class="rr-bonus" class:b-plus={bonusOf(pid) > 0} class:b-minus={bonusOf(pid) < 0}>{fmtBonus(bonusOf(pid)) || '—'}</span>
                     <span class="rr-total {ratingClass(totalForReport(pid))}">{fmtRating(totalForReport(pid))}</span>
@@ -2485,6 +2485,25 @@
     text-overflow: ellipsis;
     white-space: nowrap;
     min-width: 0;
+  }
+  /* Cognome nelle pagelle: cliccabile → /player/:id */
+  .rr-name-btn {
+    background: transparent;
+    border: none;
+    padding: 2px 4px;
+    margin: -2px -4px;
+    cursor: pointer;
+    font: inherit;
+    text-align: left;
+    border-radius: 4px;
+    transition: background 0.12s, color 0.12s;
+  }
+  .rr-name-btn:hover {
+    background: rgba(252, 211, 77, 0.10);
+    color: #fde68a;
+  }
+  .rr-name-btn:focus-visible {
+    outline: 1px solid rgba(252, 211, 77, 0.6);
   }
   .rr-rate, .rr-total {
     font-weight: 700;

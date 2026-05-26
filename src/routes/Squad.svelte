@@ -84,7 +84,7 @@
             <span class="c-fit">Fit</span>
           </div>
           {#each g.players as p}
-            <div class="row">
+            <button class="row row-btn" onclick={() => push(`/player/${p.id}`)}>
               <span class="c-shirt">{p.shirtNumber ?? '—'}</span>
               <span class="c-name">{p.firstName} {p.lastName}</span>
               <span class="c-pos">{p.position}</span>
@@ -93,7 +93,7 @@
               <span class="c-val">{fmtValue(p.marketValue)}</span>
               <span class="c-mor">{p.morale}</span>
               <span class="c-fit">{p.fitness}</span>
-            </div>
+            </button>
           {/each}
         </div>
       </section>
@@ -134,6 +134,20 @@
   }
   .row:last-child { border-bottom: 0; }
   .row:not(.head-row):hover { background: rgba(252, 211, 77, 0.05); }
+  .row-btn {
+    width: 100%;
+    background: transparent;
+    border: none;
+    border-bottom: 1px solid rgba(252, 211, 77, 0.06);
+    color: inherit;
+    text-align: left;
+    cursor: pointer;
+    font: inherit;
+  }
+  .row-btn:focus-visible {
+    outline: 1px solid rgba(252, 211, 77, 0.5);
+    outline-offset: -1px;
+  }
   .head-row {
     background: rgba(0, 0, 0, 0.5);
     color: #fcd34d;
