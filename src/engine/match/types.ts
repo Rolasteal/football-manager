@@ -44,11 +44,11 @@ export type MatchEventKind =
 export type Side = 'home' | 'away'
 
 /** Sotto-tipo del kind, per discriminare esiti di rigori, espulsioni, ecc.
- *  - 'post' | 'crossbar' | 'high' | 'wide': rigore sbagliato (palo / traversa / alto / largo)
+ *  - 'post' | 'crossbar' | 'high' | 'wide_left' | 'wide_right': rigore sbagliato
  *  - 'direct' | 'second_yellow': red_card dovuto a brutto fallo / doppia ammonizione
  *  - 'penalty': qualifica un goal/shot/save come esito di un rigore (utile per fanta-bonus) */
 export type MatchEventNote =
-  | 'post' | 'crossbar' | 'high' | 'wide'
+  | 'post' | 'crossbar' | 'high' | 'wide_left' | 'wide_right'
   | 'direct' | 'second_yellow'
   | 'penalty'
 

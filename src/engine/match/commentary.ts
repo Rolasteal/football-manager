@@ -101,9 +101,13 @@ export const TPL = {
     '☁️ {p} la spara alle stelle: rigore alto sopra la traversa!',
     '☁️ Tiro altissimo di {p}: rigore in curva!',
   ],
-  penalty_wide: [
-    '🚀 {p} calcia largo: rigore a lato!',
-    '🚀 Tiro impreciso di {p}: pallone fuori sul lato.',
+  penalty_wide_left: [
+    '🚀 {p} calcia largo a sinistra: rigore a lato!',
+    '🚀 Tiro impreciso di {p}: pallone fuori a sinistra.',
+  ],
+  penalty_wide_right: [
+    '🚀 {p} calcia largo a destra: rigore a lato!',
+    '🚀 Tiro impreciso di {p}: pallone fuori a destra.',
   ],
   foul: [
     'Fallo di {p} su {p2}.',

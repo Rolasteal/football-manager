@@ -350,15 +350,17 @@ export function simulateMatch(opts: SimulateMatchOptions): MatchResult {
       if (gk) ratings[gk.id] = clamp((ratings[gk.id] ?? 6) + 0.8, 1, 10)
       ratings[taker.id] = clamp((ratings[taker.id] ?? 6) - 0.3, 1, 10)
     } else {
-      // MISSED — fuori dello specchio (8%): 4 high / 2 wide / 1 post / 1 crossbar
-      // Sotto-distribuzione: 0.50 high, 0.25 wide, 0.125 post, 0.125 crossbar
+      // MISSED — fuori dello specchio (8%) split in 5 esiti distinti:
+      //   50%  alto    · 12.5% fuori-sinistra · 12.5% fuori-destra
+      //   12.5% palo   · 12.5% traversa
       const sub = rng.next()
-      let subNote: 'high' | 'wide' | 'post' | 'crossbar'
-      let tplKey: 'penalty_high' | 'penalty_wide' | 'penalty_post' | 'penalty_crossbar'
-      if (sub < 0.50)      { subNote = 'high';     tplKey = 'penalty_high' }
-      else if (sub < 0.75) { subNote = 'wide';     tplKey = 'penalty_wide' }
-      else if (sub < 0.875){ subNote = 'post';     tplKey = 'penalty_post' }
-      else                 { subNote = 'crossbar'; tplKey = 'penalty_crossbar' }
+      let subNote: 'high' | 'wide_left' | 'wide_right' | 'post' | 'crossbar'
+      let tplKey: 'penalty_high' | 'penalty_wide_left' | 'penalty_wide_right' | 'penalty_post' | 'penalty_crossbar'
+      if      (sub < 0.50)  { subNote = 'high';       tplKey = 'penalty_high' }
+      else if (sub < 0.625) { subNote = 'wide_left';  tplKey = 'penalty_wide_left' }
+      else if (sub < 0.75)  { subNote = 'wide_right'; tplKey = 'penalty_wide_right' }
+      else if (sub < 0.875) { subNote = 'post';       tplKey = 'penalty_post' }
+      else                  { subNote = 'crossbar';   tplKey = 'penalty_crossbar' }
       events.push({
         minute: min, second: sec, kind: 'shot',
         side: attSide.side, playerId: taker.id,

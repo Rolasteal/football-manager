@@ -11,12 +11,15 @@
   const store = careerStore()
   let career = $derived(store.career)
 
-  type OverlayKind = 'goal' | 'yellow' | 'red' | 'half_time' | 'full_time' | 'kickoff' | 'second_half' | 'penalty' | 'mvp'
+  type OverlayKind = 'goal' | 'yellow' | 'red' | 'half_time' | 'full_time' | 'kickoff' | 'second_half' | 'penalty' | 'penalty_miss' | 'mvp'
+  type PenaltyMissKind = 'high' | 'wide_left' | 'wide_right' | 'post' | 'crossbar'
   interface OverlayPayload {
     kind: OverlayKind
     side?: 'home' | 'away' | null
     playerName?: string
     teamName?: string
+    /** Tipo di "rigore sbagliato" — per scegliere la PNG fra le 5 di Roberto */
+    missKind?: PenaltyMissKind
     // MVP fields
     mvpId?: EntityId
     mvpRating?: number
@@ -103,6 +106,7 @@
     kickoff: 5000,
     second_half: 5000,
     penalty: 2600,
+    penalty_miss: 3500,
     mvp: 6500,
   }
 
@@ -353,6 +357,11 @@
       '/assets/match/Inizio_secondo_tempo.png',
       '/assets/match/Fine_partita.png',
       '/assets/match/MVP.png',
+      '/assets/match/Rigore_sbagliato_alto.png',
+      '/assets/match/Rigore_sbagliato_fuori.png',
+      '/assets/match/Rigore_sbagliato_fuori2.png',
+      '/assets/match/Rigore_sbagliato_palo.png',
+      '/assets/match/Rigore_sbagliato_traversa.png',
     ]
     // Preload BLOCCANTE: aspetta che le PNG siano in cache prima di mostrare
     // l'overlay kickoff (altrimenti il primo overlay è nero senza immagine).
@@ -424,6 +433,18 @@
       payload = { kind: 'red', side: ev.side, playerName: nameOf(ev.playerId), teamName: teamOfSide(ev.side) }
     } else if (ev.kind === 'penalty') {
       payload = { kind: 'penalty', side: ev.side, playerName: nameOf(ev.playerId), teamName: teamOfSide(ev.side) }
+    } else if (
+      ev.kind === 'shot' &&
+      (ev.note === 'high' || ev.note === 'wide_left' || ev.note === 'wide_right' || ev.note === 'post' || ev.note === 'crossbar')
+    ) {
+      // Rigore sbagliato: trigger overlay con la PNG specifica del tipo
+      payload = {
+        kind: 'penalty_miss',
+        side: ev.side,
+        playerName: nameOf(ev.playerId),
+        teamName: teamOfSide(ev.side),
+        missKind: ev.note,
+      }
     } else if (ev.kind === 'half_time') {
       payload = { kind: 'half_time' }
     } else if (ev.kind === 'full_time') {
@@ -581,6 +602,18 @@
     return { c1: t?.primaryColor ?? '#444', c2: t?.secondaryColor ?? '#888' }
   }
 
+  /** Mappa il sotto-tipo di rigore mancato → PNG asset specifica.
+   *  Roberto distingue "fuori sinistra" e "fuori destra" → 2 PNG separate. */
+  function penaltyMissAsset(k: PenaltyMissKind): string {
+    switch (k) {
+      case 'high':       return '/assets/match/Rigore_sbagliato_alto.png'
+      case 'wide_left':  return '/assets/match/Rigore_sbagliato_fuori.png'
+      case 'wide_right': return '/assets/match/Rigore_sbagliato_fuori2.png'
+      case 'post':       return '/assets/match/Rigore_sbagliato_palo.png'
+      case 'crossbar':   return '/assets/match/Rigore_sbagliato_traversa.png'
+    }
+  }
+
   function eventClass(ev: MatchEvent): string {
     if (ev.kind === 'goal') return 'ev-goal'
     if (ev.kind === 'yellow_card') return 'ev-yellow'
@@ -653,7 +686,7 @@
         class:o-red={overlay.kind === 'red'}
         class:o-pen={overlay.kind === 'penalty'}
         class:o-mvp={overlay.kind === 'mvp'}
-        class:o-break={overlay.kind === 'half_time' || overlay.kind === 'full_time' || overlay.kind === 'kickoff' || overlay.kind === 'second_half'}
+        class:o-break={overlay.kind === 'half_time' || overlay.kind === 'full_time' || overlay.kind === 'kickoff' || overlay.kind === 'second_half' || overlay.kind === 'penalty_miss'}
       >
         {#if overlay.kind === 'goal'}
           <img class="ov-goal-img" src="/assets/match/Gol.png" alt="Gol" />
@@ -694,6 +727,12 @@
           <div class="ov-pen-text">RIGORE!</div>
           {#if overlay.teamName}
             <div class="ov-pen-sub">per il <strong>{overlay.teamName}</strong></div>
+          {/if}
+        {:else if overlay.kind === 'penalty_miss' && overlay.missKind}
+          <div class="ov-break-fallback">RIGORE SBAGLIATO</div>
+          <img class="ov-break-img" src={penaltyMissAsset(overlay.missKind)} alt="Rigore sbagliato" decoding="async" />
+          {#if overlay.playerName}
+            <div class="ov-break-sub"><strong>{overlay.playerName}</strong></div>
           {/if}
         {:else if overlay.kind === 'mvp'}
           <img class="ov-break-img" src="/assets/match/MVP.png" alt="MVP" />
@@ -1490,30 +1529,39 @@
   }
   .ov-pen-sub strong { color: #fcd34d; }
 
-  /* --- MVP --- */
+  /* --- MVP ---
+     La PNG è in formato VERTICALE (portrait): la mostro con object-fit
+     contain così si vede per intero senza tagli, centrata nello schermo,
+     con padding nero ai lati orizzontali. Info card SOTTO la PNG (flex). */
   .overlay.o-mvp {
-    padding: 0;
-    background: #000;
-    gap: 0;
+    padding: 24px 0;
+    background:
+      radial-gradient(ellipse 70% 50% at 50% 40%, rgba(245, 158, 11, 0.12), transparent 70%),
+      radial-gradient(ellipse at center, #050505, #000);
+    gap: 18px;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
   }
   .overlay.o-mvp .ov-break-img {
-    position: absolute;
-    inset: 0;
-    width: 100%; height: 100%;
-    object-fit: cover;
+    position: static;
+    width: auto;
+    height: auto;
+    max-height: 68vh;
+    max-width: 92vw;
+    object-fit: contain;
+    border-radius: 8px;
+    filter: drop-shadow(0 16px 50px rgba(0, 0, 0, 0.8)) drop-shadow(0 0 30px rgba(245, 158, 11, 0.18));
     animation: breakImgIn 0.7s cubic-bezier(0.16, 1, 0.3, 1);
   }
   .ov-mvp-info {
-    position: absolute;
-    bottom: 6%;
-    left: 50%;
-    transform: translateX(-50%);
+    position: static;
     width: min(640px, 92vw);
     background: rgba(0, 0, 0, 0.82);
     backdrop-filter: blur(10px);
     border: 1px solid rgba(252, 211, 77, 0.55);
     border-radius: 14px;
-    padding: 16px 22px;
+    padding: 14px 22px;
     text-align: center;
     z-index: 2;
     animation: fadeUp 0.5s 0.5s both;
