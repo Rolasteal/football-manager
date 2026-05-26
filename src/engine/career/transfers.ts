@@ -112,46 +112,104 @@ function fmtMoneyInline(amount: number): string {
 // ====== Valutazione offerta ======
 
 /**
- * Importo plausibile per un'offerta. Base = marketValue del player. Modulato:
- * - Reputation buyer: rep 50 = ×1.0, rep 90 = ×1.20 (top club paga di più)
+ * Importo plausibile per un'offerta — realismo Serie A. Base = marketValue.
+ *
+ * Modulatori:
+ * - Reputation buyer: rep 50 = ×1.00, rep 90 = ×1.25 (top club pagano di più)
+ * - Bias top player: OVR ≥ 80 → ×1.15-1.30 (i big sono contesi, prezzi gonfi)
  * - Premio sviluppo: giovane 18-22 con potential ≥ 75 → +20%
- * - Jitter: ±15% deterministic dal rng passato
- * - Minimo: 85% del marketValue (no lowball estremo)
+ * - Lowball occasionale (10% delle volte): buyer prova un'offerta -15% sotto MV
+ *   per testare la disponibilità del venditore
+ * - Jitter: ±12% deterministic dal rng
+ * - Minimo standard: 80% del marketValue (escluso lowball che va a 0.85 * 0.85 ≈ 72%)
  * - Arrotondamento a 100k per leggibilità
  */
 export function computeOfferAmount(
   player: Player,
   buyerTeam: Team,
   refYear: number,
-  rng: Rng
+  rng: Rng,
+  playerOverall?: number
 ): number {
-  let amount = player.marketValue
-  const buyerRepFactor = 1 + Math.max(0, buyerTeam.reputation - 50) / 200
+  const mv = player.marketValue
+  const ovr = playerOverall ?? calcOverall(player)
+  let amount = mv
+
+  // Reputation buyer
+  const buyerRepFactor = 1 + Math.max(0, buyerTeam.reputation - 50) / 160
   amount *= buyerRepFactor
+
+  // Bias top player (i campioni sono pagati sopra prezzo)
+  if (ovr >= 85) amount *= 1.30
+  else if (ovr >= 80) amount *= 1.18
+  else if (ovr >= 75) amount *= 1.08
+
+  // Premio sviluppo
   const age = ageFromBirth(player.birthDate, refYear)
   const pot = player.potential ?? 70
   if (age >= 18 && age <= 22 && pot >= 75) {
     amount *= 1.20
   }
-  amount *= 0.85 + rng.next() * 0.30  // ±15%
-  amount = Math.max(amount, player.marketValue * 0.85)
+
+  // Lowball: 10% chance buyer prova un'offerta esplorativa bassa
+  const isLowball = rng.next() < 0.10
+  if (isLowball) {
+    amount = mv * 0.85
+  } else {
+    amount *= 0.88 + rng.next() * 0.24  // ±12%
+    amount = Math.max(amount, mv * 0.80)
+  }
+
   return Math.round(amount / 100_000) * 100_000
+}
+
+/**
+ * Livello di interesse del buyer in base al rapporto amount/marketValue.
+ * Usato per UI badge.
+ */
+export type InterestLevel = 'esplorativo' | 'concreto' | 'forte'
+
+export function computeInterestLevel(offerAmount: number, marketValue: number): InterestLevel {
+  if (marketValue <= 0) return 'concreto'
+  const ratio = offerAmount / marketValue
+  if (ratio < 0.95) return 'esplorativo'  // sotto MV = sondaggio
+  if (ratio >= 1.18) return 'forte'        // sopra MV +18% = vogliono davvero
+  return 'concreto'                         // intorno a MV = serio
 }
 
 // ====== AI buyer ======
 
 /**
+ * Probabilità che un buyer AI generi una nuova offerta in un dato matchday,
+ * scalata su reputation. Calibrazione realistica Serie A:
+ * - rep ≥ 80 (top): 25%/MD - i big sono molto attivi sul mercato
+ * - rep 65-79 (upper-mid): 16%/MD
+ * - rep 50-64 (mid): 9%/MD
+ * - rep < 50 (low): 4%/MD - club piccoli scoutano poco fuori dai loro player
+ */
+function offerProbForReputation(rep: number): number {
+  if (rep >= 80) return 0.25
+  if (rep >= 65) return 0.16
+  if (rep >= 50) return 0.09
+  return 0.04
+}
+
+/**
  * Cerca un giocatore del MIO club che `buyer` potrebbe voler comprare.
  * Strategia: buyer cerca upgrade — overall del target > overall medio rosa
  * buyer + 2 — affordable (≤ 35% del balance del buyer) e NON il mio capitano.
- * Esclude anche giocatori già oggetto di un'offerta pending da QUESTO buyer.
+ * Esclude giocatori già oggetto di un'offerta pending da QUESTO buyer.
+ *
+ * Picking pesato: la prob di essere scelto cresce con (ovr - threshold)^2.
+ * I top player vengono presi di mira molto più spesso (realismo: tutti
+ * vorrebbero quelli forti, pochi vogliono quelli mediocri).
  */
 function pickMyPlayerToTarget(
   career: Career,
   buyer: Team,
   existingPendingByBuyer: Set<EntityId>,
   rng: Rng
-): Player | null {
+): { player: Player; overall: number } | null {
   const myTeamId = career.club.teamId
   const myPlayers = Object.values(career.players).filter(p => p.teamId === myTeamId)
   if (myPlayers.length === 0) return null
@@ -162,16 +220,32 @@ function pickMyPlayerToTarget(
 
   const captainId = career.club.tactics.captainId
   const maxAffordable = buyer.balance * 0.35
+  const threshold = buyerAvgOvr + 2
 
-  const candidates = myPlayers.filter(p => {
-    if (p.id === captainId) return false
-    if (existingPendingByBuyer.has(p.id)) return false
-    if (p.marketValue > maxAffordable) return false
-    return calcOverall(p) > buyerAvgOvr + 2
-  })
-
+  // Pre-calcola overall per ogni candidato (evita double-compute)
+  type Cand = { player: Player; overall: number; weight: number }
+  const candidates: Cand[] = []
+  for (const p of myPlayers) {
+    if (p.id === captainId) continue
+    if (existingPendingByBuyer.has(p.id)) continue
+    if (p.marketValue > maxAffordable) continue
+    const ovr = calcOverall(p)
+    if (ovr <= threshold) continue
+    const weight = Math.pow(ovr - threshold, 2)  // bias quadratico sui top
+    candidates.push({ player: p, overall: ovr, weight })
+  }
   if (candidates.length === 0) return null
-  return candidates[Math.floor(rng.next() * candidates.length)]
+
+  // Weighted random pick
+  const total = candidates.reduce((s, c) => s + c.weight, 0)
+  let r = rng.next() * total
+  for (const c of candidates) {
+    r -= c.weight
+    if (r <= 0) return { player: c.player, overall: c.overall }
+  }
+  // Fallback (numeric drift)
+  const last = candidates[candidates.length - 1]
+  return { player: last.player, overall: last.overall }
 }
 
 // ====== Tick offerte ======
@@ -207,9 +281,8 @@ export function tickTransferOffers(career: Career, matchday: number): void {
 
   for (const buyer of aiBuyers) {
     if (buyer.balance < 5_000_000) continue
-    // Top club (rep ≥ 75) più attivi sul mercato
-    const baseProb = buyer.reputation >= 75 ? 0.15 : 0.08
-    if (!rng.chance(baseProb)) continue
+    // Probabilità tiered su reputation (vedi offerProbForReputation)
+    if (!rng.chance(offerProbForReputation(buyer.reputation))) continue
 
     // Set dei giocatori per cui questo buyer ha già un'offerta pending
     const existingByBuyer = new Set(
@@ -217,10 +290,11 @@ export function tickTransferOffers(career: Career, matchday: number): void {
         .filter(o => o.fromTeamId === buyer.id && o.status === 'pending')
         .map(o => o.playerId)
     )
-    const target = pickMyPlayerToTarget(career, buyer, existingByBuyer, rng)
-    if (!target) continue
+    const pick = pickMyPlayerToTarget(career, buyer, existingByBuyer, rng)
+    if (!pick) continue
+    const target = pick.player
 
-    const amount = computeOfferAmount(target, buyer, refYear, rng)
+    const amount = computeOfferAmount(target, buyer, refYear, rng, pick.overall)
     // Affordability double-check (50% balance hard cap)
     if (amount > buyer.balance * 0.5) continue
 
@@ -230,19 +304,26 @@ export function tickTransferOffers(career: Career, matchday: number): void {
       toTeamId: target.teamId!,
       playerId: target.id,
       amount,
+      originalAmount: amount,
       createdMd: matchday,
       expiresMd: matchday + OFFER_VALIDITY_MD,
       status: 'pending',
+      negotiationsCount: 0,
     }
     offers.push(offer)
 
-    // News al feed
+    // News al feed con livello interesse
+    const interest = computeInterestLevel(amount, target.marketValue)
+    const interestTxt =
+      interest === 'forte' ? 'forte interesse' :
+      interest === 'esplorativo' ? 'sondaggio esplorativo' :
+      'offerta concreta'
     career.news.unshift({
       id: generateId(rng),
       date: newsDate,
       kind: 'transfer',
-      title: `Offerta in arrivo: ${buyer.shortName} per ${target.firstName} ${target.lastName}`,
-      body: `${buyer.name} offre ${fmtMoneyInline(amount)} per ${target.firstName} ${target.lastName} (${target.position}). Risposta richiesta entro ${OFFER_VALIDITY_MD} settimane.`,
+      title: `${buyer.shortName} su ${target.lastName} — ${fmtMoneyInline(amount)}`,
+      body: `${buyer.name} presenta un'${interestTxt} per ${target.firstName} ${target.lastName} (${target.position}, OVR ${pick.overall}). Risposta entro ${OFFER_VALIDITY_MD} settimane.`,
       read: false,
     })
   }
@@ -400,6 +481,139 @@ export function acceptOffer(career: Career, offerId: EntityId): TransferActionRe
   career.updatedAt = Date.now()
 
   return { ok: true, completedTransfer: completed }
+}
+
+// ====== Trattativa (controproposta) ======
+
+export type NegotiateOutcome = 'accepted' | 'countered' | 'rejected'
+
+export interface NegotiateResult {
+  ok: boolean
+  reason?: string
+  outcome?: NegotiateOutcome
+  /** Importo finale dell'offerta dopo la trattativa */
+  newAmount?: number
+  /** Messaggio human-readable da mostrare nella UI */
+  message?: string
+}
+
+/**
+ * Tetto massimo che l'AI buyer è disposto a pagare per il player.
+ * Calibrato su reputation buyer + bias top player + premio giovani.
+ *
+ * Realismo: un top club paga 50% sopra MV un top player; un club piccolo
+ * fa fatica anche solo a stare a MV.
+ */
+function buyerWillingnessCeiling(
+  player: Player,
+  buyer: Team,
+  playerOverall: number,
+  refYear: number
+): number {
+  const mv = player.marketValue
+  let ceiling = mv
+
+  if (buyer.reputation >= 80) ceiling *= 1.50
+  else if (buyer.reputation >= 65) ceiling *= 1.30
+  else if (buyer.reputation >= 50) ceiling *= 1.15
+  else ceiling *= 1.05
+
+  // Top player premium (gli stessi player che hanno offerte alte sopportano rilanci più alti)
+  if (playerOverall >= 85) ceiling *= 1.15
+  else if (playerOverall >= 80) ceiling *= 1.08
+
+  // Premio giovani con potential alto
+  const age = ageFromBirth(player.birthDate, refYear)
+  const pot = player.potential ?? 70
+  if (age >= 18 && age <= 22 && pot >= 80) ceiling *= 1.20
+
+  // Hard cap: mai oltre 60% del balance del buyer (sennò fallirebbe)
+  ceiling = Math.min(ceiling, buyer.balance * 0.60)
+  return ceiling
+}
+
+/**
+ * Avvia una trattativa: l'utente propone un nuovo importo `counterAmount`
+ * all'AI buyer. Risposte possibili:
+ *
+ * 1. **accepted**: counter ≤ ceiling → AI accetta, `offer.amount = counter`,
+ *    status resta 'pending' (l'utente DEVE ancora accettare formalmente)
+ * 2. **countered**: counter ≤ ceiling × 1.15 → AI rilancia al punto medio
+ *    tra l'offerta corrente e il ceiling. status resta 'pending'
+ * 3. **rejected**: counter troppo alto → AI ritira l'offerta, status = 'rejected'
+ *
+ * Limiti:
+ * - Max 2 trattative per offerta (`negotiationsCount`). Alla 3ª l'AI chiude.
+ * - counter > offer.amount (rilancio reale, no sconto)
+ * - counter ≥ marketValue (no svendita)
+ *
+ * Determinismo: rng dedicato dal seed + offer.id (per il "punto medio" jitter).
+ */
+export function negotiateOffer(
+  career: Career,
+  offerId: EntityId,
+  counterAmount: number
+): NegotiateResult {
+  const { offers } = ensureTransferState(career)
+  const offer = offers.find(o => o.id === offerId)
+  if (!offer) return { ok: false, reason: 'Offerta non trovata.' }
+  if (offer.status !== 'pending') return { ok: false, reason: 'Offerta non più valida.' }
+
+  const negCount = offer.negotiationsCount ?? 0
+  if (negCount >= 2) {
+    return { ok: false, reason: 'Hai esaurito i tentativi di trattativa per questa offerta.' }
+  }
+
+  const player = career.players[offer.playerId]
+  const buyer = career.teams[offer.fromTeamId]
+  if (!player || !buyer) return { ok: false, reason: 'Dati incompleti.' }
+
+  if (counterAmount <= offer.amount) {
+    return { ok: false, reason: 'La controproposta deve essere superiore all\'offerta corrente.' }
+  }
+  if (counterAmount < player.marketValue) {
+    return { ok: false, reason: 'La controproposta non può essere inferiore al valore di mercato.' }
+  }
+
+  const ovr = calcOverall(player)
+  const ceiling = buyerWillingnessCeiling(player, buyer, ovr, career.season.year)
+  // Arrotonda counter a 100k per coerenza
+  const counter = Math.round(counterAmount / 100_000) * 100_000
+
+  // Caso 1: AI accetta direttamente
+  if (counter <= ceiling) {
+    offer.amount = counter
+    offer.negotiationsCount = negCount + 1
+    return {
+      ok: true,
+      outcome: 'accepted',
+      newAmount: counter,
+      message: `${buyer.name} ha accettato la tua controproposta di ${fmtMoneyInline(counter)}. Conferma l'accordo per finalizzare.`,
+    }
+  }
+
+  // Caso 2: AI rilancia al punto medio
+  const stretch = ceiling * 1.15
+  if (counter <= stretch) {
+    const aiCounter = Math.round((offer.amount + ceiling) / 2 / 100_000) * 100_000
+    offer.amount = aiCounter
+    offer.negotiationsCount = negCount + 1
+    return {
+      ok: true,
+      outcome: 'countered',
+      newAmount: aiCounter,
+      message: `${buyer.name} non arriva a ${fmtMoneyInline(counter)} ma rilancia a ${fmtMoneyInline(aiCounter)}.`,
+    }
+  }
+
+  // Caso 3: AI rifiuta e si ritira
+  offer.status = 'rejected'
+  offer.negotiationsCount = negCount + 1
+  return {
+    ok: true,
+    outcome: 'rejected',
+    message: `${buyer.name} considera ${fmtMoneyInline(counter)} fuori budget e si ritira dalla trattativa.`,
+  }
 }
 
 export function rejectOffer(career: Career, offerId: EntityId): TransferActionResult {

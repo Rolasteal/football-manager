@@ -9,9 +9,12 @@
     transferWindowRemainingMd,
     matchdaysToNextWindow,
     ensureTransferState,
-    pendingOffersForMyClub,
     acceptOffer,
     rejectOffer,
+    negotiateOffer,
+    computeInterestLevel,
+    type InterestLevel,
+    type NegotiateOutcome,
   } from '$engine/career/transfers'
   import { calcOverall } from '$engine/gen/player'
   import type { TransferOffer, CompletedTransfer } from '$engine/career/types'
@@ -25,29 +28,42 @@
   let windowRemaining = $derived(career ? transferWindowRemainingMd(career) : 0)
   let mdToNext = $derived(career ? matchdaysToNextWindow(career) : 0)
 
-  let pendingOffers = $derived.by<TransferOffer[]>(() => {
-    if (!career) return []
-    ensureTransferState(career)
-    return pendingOffersForMyClub(career)
-  })
+  // Lettura difensiva: i campi possono essere undefined per save legacy fino al
+  // primo advanceMatchday. Per nuove career sono già inizializzati a [] in
+  // buildCareerFromPreview. Onmount li forza per i legacy.
+  let pendingOffers = $derived<TransferOffer[]>(
+    !career
+      ? []
+      : (career.transferOffers ?? []).filter(o => o.status === 'pending' && o.toTeamId === career.club.teamId)
+  )
 
-  let history = $derived.by<CompletedTransfer[]>(() => {
-    if (!career) return []
-    ensureTransferState(career)
-    return career.transferHistory ?? []
-  })
+  let history = $derived<CompletedTransfer[]>(career?.transferHistory ?? [])
 
   // Plusvalenze stagione corrente (somma profitLoss su cessioni in questa season)
-  let seasonProfit = $derived.by(() => {
-    if (!career) return 0
-    const ts = career.transferHistory ?? []
-    return ts.filter(t => t.isMineSold).reduce((s, t) => s + t.profitLoss, 0)
-  })
+  let seasonProfit = $derived(
+    (career?.transferHistory ?? [])
+      .filter(t => t.isMineSold)
+      .reduce((s, t) => s + t.profitLoss, 0)
+  )
 
   let actionMsg = $state<string | null>(null)
   let actionOk = $state(false)
 
-  onMount(() => { if (!career) push('/') })
+  // ====== Stato modale trattativa ======
+  let negotiatingOffer = $state<TransferOffer | null>(null)
+  let counterAmount = $state<number>(0)
+  let negotiateMsg = $state<string | null>(null)
+  let negotiateOk = $state(false)
+  let negotiateOutcome = $state<NegotiateOutcome | null>(null)
+
+  onMount(() => {
+    if (!career) {
+      push('/')
+      return
+    }
+    // Backfill per save legacy creati prima di Fase 3.G.1 (mutazione safe in onMount)
+    ensureTransferState(career)
+  })
 
   function playerOfOffer(o: TransferOffer) {
     return career?.players[o.playerId] ?? null
@@ -86,6 +102,63 @@
     setTimeout(() => { actionMsg = null }, 3500)
   }
 
+  function openNegotiate(o: TransferOffer) {
+    negotiatingOffer = o
+    // Pre-imposta una controproposta sensata: 15% sopra l'offerta corrente,
+    // arrotondata a 100k
+    counterAmount = Math.round(o.amount * 1.15 / 100_000) * 100_000
+    negotiateMsg = null
+    negotiateOutcome = null
+  }
+
+  function closeNegotiate() {
+    negotiatingOffer = null
+    counterAmount = 0
+    negotiateMsg = null
+    negotiateOutcome = null
+  }
+
+  function setCounterPct(o: TransferOffer, pct: number) {
+    counterAmount = Math.round(o.amount * (1 + pct / 100) / 100_000) * 100_000
+  }
+
+  async function handleNegotiate() {
+    if (!career || !negotiatingOffer) return
+    const res = negotiateOffer(career, negotiatingOffer.id, counterAmount)
+    negotiateOk = res.ok
+    negotiateMsg = res.message ?? res.reason ?? null
+    negotiateOutcome = res.outcome ?? null
+    if (res.ok) {
+      await persistActiveCareer()
+      // Se l'AI ha accettato o rilanciato, l'offerta è ancora pending con il
+      // nuovo amount — manteniamo la modale aperta per mostrare il risultato e
+      // permettere all'utente di accettare/rilanciare ancora. Se rejected,
+      // chiudiamo dopo 2.5s.
+      if (res.outcome === 'rejected') {
+        setTimeout(() => closeNegotiate(), 2500)
+      } else {
+        // Aggiorna la controproposta suggerita al nuovo amount (+10%)
+        const updatedOffer = career.transferOffers?.find(o => o.id === negotiatingOffer!.id)
+        if (updatedOffer) {
+          negotiatingOffer = updatedOffer
+          counterAmount = Math.round(updatedOffer.amount * 1.10 / 100_000) * 100_000
+        }
+      }
+    }
+  }
+
+  function interestColor(level: InterestLevel): string {
+    if (level === 'forte') return 'interest-strong'
+    if (level === 'esplorativo') return 'interest-low'
+    return 'interest-mid'
+  }
+
+  function interestLabel(level: InterestLevel): string {
+    if (level === 'forte') return 'Forte interesse'
+    if (level === 'esplorativo') return 'Sondaggio'
+    return 'Concreta'
+  }
+
   function windowLabel(w: 'summer' | 'winter' | 'closed'): string {
     if (w === 'summer') return 'Aperta — Mercato estivo'
     if (w === 'winter') return 'Aperta — Mercato di gennaio'
@@ -94,6 +167,8 @@
 
   function openPlayer(id: string) { push(`/player/${id}`) }
 </script>
+
+<svelte:window onkeydown={(e) => { if (e.key === 'Escape' && negotiatingOffer) closeNegotiate() }} />
 
 <AppShell>
   {#if !career || !myTeam || !finances}
@@ -164,6 +239,8 @@
             {#if p && buyer}
               {@const ovr = calcOverall(p)}
               {@const expIn = o.expiresMd - career.season.currentMatchday}
+              {@const interest = computeInterestLevel(o.amount, p.marketValue)}
+              {@const negLeft = 2 - (o.negotiationsCount ?? 0)}
               <article class="offer-card card-gold">
                 <div class="offer-buyer">
                   <span class="crest" style="--c1: {buyer.primaryColor}; --c2: {buyer.secondaryColor};">{buyer.shortName}</span>
@@ -186,11 +263,20 @@
                   <div class="amount-delta" class:up={o.amount > p.marketValue} class:down={o.amount < p.marketValue}>
                     {o.amount > p.marketValue ? '+' : ''}{fmtMoney(o.amount - p.marketValue)} vs valore
                   </div>
+                  <span class="interest-chip {interestColor(interest)}">{interestLabel(interest)}</span>
                 </div>
                 <div class="offer-actions">
                   <div class="expire-chip" class:urgent={expIn <= 1}>Scade in {expIn} g.</div>
                   <button class="btn-gold accept-btn" onclick={() => handleAccept(o)}>✓ Accetta</button>
-                  <button class="btn-ghost reject-btn" onclick={() => handleReject(o)}>✗ Rifiuta</button>
+                  <button
+                    class="btn-trattativa"
+                    onclick={() => openNegotiate(o)}
+                    disabled={negLeft <= 0}
+                    title={negLeft > 0 ? `Apri una controproposta (${negLeft} rimaste)` : 'Hai esaurito i tentativi'}
+                  >
+                    💬 Trattativa{negLeft < 2 ? ` (${negLeft})` : ''}
+                  </button>
+                  <button class="btn-reject" onclick={() => handleReject(o)}>✗ Rifiuta</button>
                 </div>
               </article>
             {/if}
@@ -246,7 +332,102 @@
         Le offerte ricevute hanno validità di <strong>2 giornate</strong>: oltre quel termine scadono automaticamente.
         Accettando, il giocatore lascia immediatamente la rosa e l'incasso entra in cassa.
       </p>
+      <p>
+        Puoi avviare fino a <strong>2 trattative</strong> per offerta proponendo una controproposta. L'AI valuterà
+        in base alla sua reputation, al budget e al valore del giocatore: può <strong>accettare</strong>, <strong>rilanciare</strong> a un punto intermedio o <strong>chiudere</strong> definitivamente.
+      </p>
     </section>
+
+    <!-- ====== Modale Trattativa ====== -->
+    {#if negotiatingOffer}
+      {@const p = playerOfOffer(negotiatingOffer)}
+      {@const buyer = teamOfOffer(negotiatingOffer)}
+      {#if p && buyer}
+        <div
+          class="modal-backdrop"
+          onclick={closeNegotiate}
+          onkeydown={(e) => { if (e.key === 'Escape') closeNegotiate() }}
+          role="presentation"
+          tabindex="-1"
+        >
+          <div
+            class="modal-trattativa card-gold"
+            onclick={(e) => e.stopPropagation()}
+            onkeydown={(e) => e.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="modal-title-trattativa"
+            tabindex="-1"
+          >
+            <header class="modal-head">
+              <div class="modal-h-l">
+                <span class="crest" style="--c1: {buyer.primaryColor}; --c2: {buyer.secondaryColor};">{buyer.shortName}</span>
+                <div>
+                  <h3 class="modal-title" id="modal-title-trattativa">Trattativa con {buyer.name}</h3>
+                  <div class="modal-sub">Per <strong>{p.firstName} {p.lastName}</strong> · {p.position} · OVR {calcOverall(p)} · Valore {fmtMoney(p.marketValue)}</div>
+                </div>
+              </div>
+              <button class="modal-close" onclick={closeNegotiate} aria-label="Chiudi">✗</button>
+            </header>
+
+            <div class="modal-stats">
+              <div class="stat">
+                <span class="stat-l">Offerta originale</span>
+                <span class="stat-v">{fmtMoney(negotiatingOffer.originalAmount ?? negotiatingOffer.amount)}</span>
+              </div>
+              <div class="stat">
+                <span class="stat-l">Offerta corrente</span>
+                <span class="stat-v text-gold">{fmtMoney(negotiatingOffer.amount)}</span>
+              </div>
+              <div class="stat">
+                <span class="stat-l">Tentativi rimasti</span>
+                <span class="stat-v">{2 - (negotiatingOffer.negotiationsCount ?? 0)} / 2</span>
+              </div>
+            </div>
+
+            <div class="modal-form">
+              <label class="counter-label">
+                <span>La tua controproposta</span>
+                <div class="counter-input-wrap">
+                  <span class="counter-prefix">€</span>
+                  <input
+                    type="number"
+                    class="counter-input"
+                    bind:value={counterAmount}
+                    min={Math.max(p.marketValue, negotiatingOffer.amount + 100_000)}
+                    step="100000"
+                  />
+                </div>
+              </label>
+              <div class="counter-presets">
+                <button class="preset-btn" onclick={() => setCounterPct(negotiatingOffer, 10)}>+10%</button>
+                <button class="preset-btn" onclick={() => setCounterPct(negotiatingOffer, 20)}>+20%</button>
+                <button class="preset-btn" onclick={() => setCounterPct(negotiatingOffer, 30)}>+30%</button>
+                <button class="preset-btn" onclick={() => setCounterPct(negotiatingOffer, 50)}>+50%</button>
+              </div>
+            </div>
+
+            {#if negotiateMsg}
+              <div class="negotiate-result" class:ok={negotiateOk && negotiateOutcome === 'accepted'} class:warn={negotiateOk && negotiateOutcome === 'countered'} class:err={!negotiateOk || negotiateOutcome === 'rejected'}>
+                {negotiateMsg}
+              </div>
+            {/if}
+
+            <div class="modal-actions">
+              <button class="btn-trattativa modal-submit" onclick={handleNegotiate} disabled={(negotiatingOffer.negotiationsCount ?? 0) >= 2 || counterAmount <= negotiatingOffer.amount}>
+                💬 Invia controproposta
+              </button>
+              <button class="btn-gold modal-accept" onclick={async () => { await handleAccept(negotiatingOffer); closeNegotiate() }}>
+                ✓ Accetta {fmtMoney(negotiatingOffer.amount)}
+              </button>
+              <button class="btn-reject modal-reject" onclick={async () => { await handleReject(negotiatingOffer); closeNegotiate() }}>
+                ✗ Chiudi trattativa
+              </button>
+            </div>
+          </div>
+        </div>
+      {/if}
+    {/if}
   {/if}
 </AppShell>
 
@@ -430,7 +611,234 @@
     border-color: rgba(220, 38, 38, 0.5);
   }
   .accept-btn { padding: 8px 14px; font-size: 13px; }
-  .reject-btn { padding: 8px 14px; font-size: 13px; }
+
+  /* Bottone Rifiuta: stesso shape di Accetta ma rosso pieno */
+  .btn-reject {
+    padding: 8px 14px;
+    font-size: 13px;
+    font-weight: 700;
+    font-family: inherit;
+    color: #fff;
+    background: linear-gradient(135deg, #b91c1c, #ef4444 60%, #b91c1c);
+    border: 1px solid rgba(239, 68, 68, 0.5);
+    border-radius: 8px;
+    cursor: pointer;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.15), 0 2px 8px rgba(220, 38, 38, 0.18);
+    transition: transform 0.1s, box-shadow 0.15s;
+    letter-spacing: 0.02em;
+  }
+  .btn-reject:hover:not(:disabled) {
+    transform: translateY(-1px);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18), 0 4px 14px rgba(220, 38, 38, 0.32);
+  }
+  .btn-reject:active:not(:disabled) { transform: translateY(0); }
+  .btn-reject:disabled { opacity: 0.55; cursor: not-allowed; }
+
+  /* Bottone Trattativa: blu/indaco simile a forma di accetta */
+  .btn-trattativa {
+    padding: 8px 14px;
+    font-size: 13px;
+    font-weight: 700;
+    font-family: inherit;
+    color: #fff;
+    background: linear-gradient(135deg, #4338ca, #6366f1 60%, #4338ca);
+    border: 1px solid rgba(99, 102, 241, 0.55);
+    border-radius: 8px;
+    cursor: pointer;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.16), 0 2px 8px rgba(99, 102, 241, 0.18);
+    transition: transform 0.1s, box-shadow 0.15s;
+    letter-spacing: 0.02em;
+  }
+  .btn-trattativa:hover:not(:disabled) {
+    transform: translateY(-1px);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18), 0 4px 14px rgba(99, 102, 241, 0.36);
+  }
+  .btn-trattativa:active:not(:disabled) { transform: translateY(0); }
+  .btn-trattativa:disabled { opacity: 0.50; cursor: not-allowed; }
+
+  /* Chip "livello interesse" sotto importo */
+  .interest-chip {
+    display: inline-block;
+    margin-top: 4px;
+    padding: 2px 9px;
+    border-radius: 999px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+  }
+  .interest-strong {
+    background: rgba(34, 197, 94, 0.18);
+    color: #86efac;
+    border: 1px solid rgba(34, 197, 94, 0.4);
+  }
+  .interest-mid {
+    background: rgba(252, 211, 77, 0.15);
+    color: #fde68a;
+    border: 1px solid rgba(252, 211, 77, 0.4);
+  }
+  .interest-low {
+    background: rgba(120, 113, 108, 0.18);
+    color: #d4cfc1;
+    border: 1px solid rgba(120, 113, 108, 0.4);
+  }
+
+  /* ===== MODALE TRATTATIVA ===== */
+  .modal-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.74);
+    backdrop-filter: blur(6px);
+    display: grid;
+    place-items: center;
+    z-index: 100;
+    padding: 16px;
+  }
+  .modal-trattativa {
+    width: min(560px, 100%);
+    padding: 22px 26px 18px;
+    max-height: 92vh;
+    overflow-y: auto;
+    animation: modal-in 0.22s ease;
+  }
+  @keyframes modal-in {
+    from { opacity: 0; transform: translateY(12px) scale(0.97); }
+    to { opacity: 1; transform: none; }
+  }
+  .modal-head {
+    display: flex; align-items: flex-start; justify-content: space-between;
+    gap: 14px;
+    border-bottom: 1px solid rgba(252, 211, 77, 0.16);
+    padding-bottom: 14px;
+    margin-bottom: 14px;
+  }
+  .modal-h-l { display: flex; gap: 12px; align-items: center; }
+  .modal-title { margin: 0; color: #fef3c7; font-size: 17px; font-weight: 800; }
+  .modal-sub { color: #b8b0a0; font-size: 12px; margin-top: 3px; }
+  .modal-sub strong { color: #fef3c7; }
+  .modal-close {
+    background: none;
+    border: 0;
+    color: #b8b0a0;
+    font-size: 18px;
+    cursor: pointer;
+    padding: 4px 8px;
+    border-radius: 6px;
+  }
+  .modal-close:hover { background: rgba(252, 211, 77, 0.10); color: #fef3c7; }
+
+  .modal-stats {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 12px;
+    padding: 10px 0 14px;
+    border-bottom: 1px solid rgba(252, 211, 77, 0.10);
+    margin-bottom: 14px;
+  }
+  .modal-stats .stat { display: flex; flex-direction: column; gap: 3px; }
+  .modal-stats .stat-l { color: #918778; font-size: 10px; text-transform: uppercase; letter-spacing: 0.1em; font-weight: 700; }
+  .modal-stats .stat-v { color: #fef3c7; font-weight: 800; font-size: 16px; font-variant-numeric: tabular-nums; }
+
+  .modal-form { margin-bottom: 14px; }
+  .counter-label {
+    display: flex; flex-direction: column; gap: 6px;
+    color: #d4cfc1;
+    font-size: 13px;
+    font-weight: 600;
+  }
+  .counter-input-wrap {
+    position: relative;
+    display: flex;
+    align-items: center;
+  }
+  .counter-prefix {
+    position: absolute;
+    left: 12px;
+    color: #fcd34d;
+    font-weight: 800;
+    font-size: 18px;
+  }
+  .counter-input {
+    width: 100%;
+    background: rgba(0, 0, 0, 0.5);
+    border: 1px solid rgba(252, 211, 77, 0.3);
+    color: #fef3c7;
+    border-radius: 8px;
+    padding: 12px 14px 12px 32px;
+    font-size: 18px;
+    font-weight: 800;
+    font-family: inherit;
+    font-variant-numeric: tabular-nums;
+    transition: border 0.15s;
+  }
+  .counter-input:focus {
+    outline: none;
+    border-color: rgba(252, 211, 77, 0.6);
+    box-shadow: 0 0 0 3px rgba(252, 211, 77, 0.12);
+  }
+
+  .counter-presets {
+    display: flex;
+    gap: 8px;
+    margin-top: 8px;
+    flex-wrap: wrap;
+  }
+  .preset-btn {
+    background: rgba(252, 211, 77, 0.08);
+    color: #fde68a;
+    border: 1px solid rgba(252, 211, 77, 0.28);
+    padding: 6px 12px;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 700;
+    cursor: pointer;
+    font-family: inherit;
+    transition: all 0.12s;
+  }
+  .preset-btn:hover {
+    background: rgba(252, 211, 77, 0.18);
+    border-color: rgba(252, 211, 77, 0.5);
+  }
+
+  .negotiate-result {
+    margin-bottom: 14px;
+    padding: 11px 14px;
+    border-radius: 8px;
+    font-size: 13px;
+    line-height: 1.4;
+    font-weight: 600;
+  }
+  .negotiate-result.ok {
+    background: rgba(34, 197, 94, 0.14);
+    color: #86efac;
+    border: 1px solid rgba(34, 197, 94, 0.4);
+  }
+  .negotiate-result.warn {
+    background: rgba(252, 211, 77, 0.12);
+    color: #fde68a;
+    border: 1px solid rgba(252, 211, 77, 0.4);
+  }
+  .negotiate-result.err {
+    background: rgba(220, 38, 38, 0.14);
+    color: #fca5a5;
+    border: 1px solid rgba(220, 38, 38, 0.4);
+  }
+
+  .modal-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+  .modal-submit { grid-column: 1 / -1; padding: 11px 16px; font-size: 14px; }
+  .modal-accept { padding: 10px 14px; font-size: 13px; }
+  .modal-reject { padding: 10px 14px; font-size: 13px; }
+
+  @media (max-width: 600px) {
+    .modal-stats { grid-template-columns: repeat(3, 1fr); gap: 8px; }
+    .modal-stats .stat-v { font-size: 13px; }
+    .modal-actions { grid-template-columns: 1fr; }
+    .modal-submit { grid-column: auto; }
+  }
 
   /* ===== HISTORY ===== */
   .history-sec { margin-top: 8px; }

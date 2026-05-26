@@ -109,6 +109,17 @@ export interface TransferOffer {
   /** Matchday entro cui va accettata/rifiutata (poi diventa 'expired') */
   expiresMd: number
   status: TransferOfferStatus
+  /**
+   * Round di trattativa già consumati (default 0). Max 2 per offerta:
+   * dopo il 2° rilancio l'AI accetta o chiude definitivamente.
+   * Fase 3.G.1.
+   */
+  negotiationsCount?: number
+  /**
+   * Importo iniziale dell'offerta (immutabile dopo la creazione). amount può
+   * cambiare via trattativa, originalAmount no — serve per UI/history.
+   */
+  originalAmount?: number
 }
 
 /**

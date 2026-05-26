@@ -312,6 +312,11 @@ export function buildCareerFromPreview(preview: PreviewWorld, opts: Omit<CreateC
     news: initialNews,
     // Fase 3.1: finanze club ricche per il mio club
     clubFinances: initClubFinances(myTeam),
+    // Fase 3.G.1: stato mercato vuoto pronto (le offerte si generano in
+    // advanceMatchday via tickTransferOffers). Init esplicito evita che
+    // la UI /transfers debba mutare i campi dentro $derived (fix black page).
+    transferOffers: [],
+    transferHistory: [],
   }
   // Fase 3.D: contratti iniziali per tutta la rosa di tutti i club +
   // monte ingaggi del MIO club aggiornato dalla rosa reale.
