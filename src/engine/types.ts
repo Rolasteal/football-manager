@@ -173,7 +173,45 @@ export interface Stadium {
   pitchQuality: number
   /** Settori — per costruzione/espansione (Fase 3) */
   sectors?: StadiumSector[]
+  /**
+   * Lavoro in corso sullo stadio (Fase 3.E). Max 1 alla volta. Quando completa,
+   * gli effetti (capacityDelta, premiumPriceDelta, pitchQualityDelta) si
+   * applicano permanentemente allo Stadium e activeWork torna undefined.
+   */
+  activeWork?: StadiumWork
+  /**
+   * Bonus permanente al prezzo medio biglietto in € (Fase 3.E). Accumulato dai
+   * lavori 'premium_sector' completati. Sommato al prezzo base in
+   * avgTicketPrice (finances.ts).
+   */
+  premiumPriceBonus?: number
 }
+
+/**
+ * Lavoro infrastrutturale sullo stadio in corso. Pagamento rateizzato sulla
+ * durata in matchday (settimane). Quando current matchday >= startedAt + duration,
+ * il lavoro completa e gli effetti si applicano allo Stadium.
+ */
+export interface StadiumWork {
+  id: EntityId
+  type: StadiumWorkType
+  /** Matchday assoluto (career.season.year + matchday) di inizio lavori — usato per UI history */
+  startedAtMatchday: number
+  /** Costo totale in € */
+  totalCost: number
+  /** Euro pagati finora (cresce ogni settimana del weeklyTick) */
+  paidSoFar: number
+  /** Durata in matchday/settimane */
+  durationMatchdays: number
+  /** Matchday rimanenti al completamento (cresce verso 0) */
+  remainingMatchdays: number
+  /** Effetti che verranno applicati a completamento */
+  capacityDelta?: number
+  premiumPriceDelta?: number
+  pitchQualityDelta?: number
+}
+
+export type StadiumWorkType = 'expand_small' | 'expand_large' | 'premium_sector' | 'pitch_quality'
 
 export interface StadiumSector {
   id: EntityId

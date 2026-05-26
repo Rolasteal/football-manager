@@ -21,6 +21,7 @@
 import type { Team, Stadium, League } from '$engine/types'
 import type { Career, ClubFinances, FinanceEntry } from './types'
 import { computeStandings } from '$engine/competition/standings'
+import { applyStadiumWorkTick } from './stadium'
 
 /** Numero massimo di voci di history conservate (memory cap + dashboard trend) */
 const HISTORY_CAP = 30
@@ -156,6 +157,23 @@ export function weeklyTick(career: Career, matchday: number): void {
   // Sincronizza Team.balance del mio club
   myTeam.balance = finances.cash
 
+  // ----- Lavori stadio (Fase 3.E) -----
+  // Drain rata settimanale + check completamento. Mutua finances.cash + history.
+  const stadiumTick = applyStadiumWorkTick(career, matchday)
+  if (stadiumTick.drained > 0) {
+    finances.cash -= stadiumTick.drained
+    finances.history.unshift({
+      matchday,
+      label: 'Lavori stadio',
+      amount: -stadiumTick.drained,
+      balanceAfter: finances.cash,
+    })
+    if (finances.history.length > HISTORY_CAP) {
+      finances.history.length = HISTORY_CAP
+    }
+    myTeam.balance = finances.cash
+  }
+
   // ----- AI team -----
   for (const t of Object.values(career.teams)) {
     if (t.id === myTeamId) continue
@@ -219,13 +237,15 @@ export function computeOccupancy(
  * Prezzo medio biglietto in € per uno stadio. Dipende da:
  * - tier lega (1 = top, 2 = lower) → base price
  * - reputation team di casa → premium top club
+ * - stadium.premiumPriceBonus (Fase 3.E) — bonus accumulato dai lavori 'premium_sector'
  *
- * Range realistico: €10 (piccola Serie B) → €55 (top Serie A).
+ * Range realistico: €10 (piccola Serie B) → €55 (top Serie A) + bonus premium.
  */
-export function avgTicketPrice(homeTeam: Team, leagueTier: number): number {
+export function avgTicketPrice(homeTeam: Team, leagueTier: number, stadium?: Stadium): number {
   const basePrice = leagueTier === 1 ? 18 : 10
   const repPremium = Math.max(0, homeTeam.reputation - 30) * 0.45
-  return Math.round(basePrice + repPremium)
+  const premiumBonus = stadium?.premiumPriceBonus ?? 0
+  return Math.round(basePrice + repPremium + premiumBonus)
 }
 
 /**
@@ -290,7 +310,7 @@ export function applyMatchdayGate(career: Career, matchday: number): void {
     // Jitter seed deterministic dal career seed + md + team
     const jitterSeed = (career.seed ^ matchday ^ homeTeam.id.charCodeAt(0)) >>> 0
     const occupancy = computeOccupancy(homeTeam, form, matchday, totalMd, jitterSeed)
-    const ticket = avgTicketPrice(homeTeam, tier)
+    const ticket = avgTicketPrice(homeTeam, tier, stadium)
     const gate = computeGateRevenue(stadium, occupancy, ticket)
 
     if (homeTeam.id === myTeamId) {
