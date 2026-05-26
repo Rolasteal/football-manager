@@ -356,70 +356,67 @@ function pruneOffers(career: Career): void {
   career.transferOffers = [...pending, ...keepClosed]
 }
 
-// ====== Accept / Reject ======
-
-export interface TransferActionResult {
-  ok: boolean
-  reason?: string
-  completedTransfer?: CompletedTransfer
-}
+// ====== executeTransfer (helper condiviso) ======
 
 /**
- * Accetta un'offerta pending. Esegue:
- * 1. Sposta player.teamId al buyer
- * 2. Aggiorna cassa club venditore (mio = clubFinances.cash; AI = team.balance)
- * 3. Detrae cassa club compratore (idem)
- * 4. Aggiunge CompletedTransfer alla history
- * 5. Marca 'accepted' l'offerta + auto-reject delle altre pending per stesso player
- * 6. Pulisce il lineup mio club se è una mia cessione (rimuove ID giocatore venduto)
- * 7. News al feed
+ * Finalizza il trasferimento di `player` da `seller` a `buyer` per `amount` €
+ * al matchday `md`. Usato sia da `acceptOffer` (offerte ricevute pending) che
+ * da `submitMyOffer` (mie offerte accettate al volo) che dai trasferimenti
+ * AI↔AI di sottofondo (Fase 3.G.2.b).
+ *
+ * Esegue:
+ * - Cassa venditore (riceve) — sync clubFinances ↔ team.balance per mio club
+ * - Cassa compratore (paga) — idem
+ * - player.teamId = buyer.id
+ * - Pulisce lineup mio club se è una mia cessione (anche capitano se necessario)
+ * - Aggiunge `CompletedTransfer` a transferHistory
+ * - News al feed (verbosity scalata: `silent=true` per AI↔AI di massa per non
+ *   spammare; comunque l'entry in history c'è per cronologia /transfers)
  */
-export function acceptOffer(career: Career, offerId: EntityId): TransferActionResult {
-  const { offers, history } = ensureTransferState(career)
-  const offer = offers.find(o => o.id === offerId)
-  if (!offer) return { ok: false, reason: 'Offerta non trovata.' }
-  if (offer.status !== 'pending') return { ok: false, reason: 'Offerta non più valida.' }
-
-  const player = career.players[offer.playerId]
-  const buyer = career.teams[offer.fromTeamId]
-  const seller = career.teams[offer.toTeamId]
-  if (!player || !buyer || !seller) return { ok: false, reason: 'Dati incompleti.' }
-
+function executeTransfer(
+  career: Career,
+  player: Player,
+  seller: Team,
+  buyer: Team,
+  amount: number,
+  md: number,
+  opts: { silent?: boolean } = {}
+): CompletedTransfer {
+  const { history } = ensureTransferState(career)
   const myTeamId = career.club.teamId
-  const md = career.season.currentMatchday
   const date = inGameDate(career, md)
-  const profitLoss = offer.amount - player.marketValue
+  const profitLoss = amount - player.marketValue
 
   // ----- Cassa venditore (riceve) -----
   if (seller.id === myTeamId) {
     const finances = ensureClubFinances(career)
-    finances.cash += offer.amount
+    finances.cash += amount
     finances.history.unshift({
       matchday: md,
       label: `Cessione ${player.lastName} → ${buyer.shortName}`,
-      amount: offer.amount,
+      amount,
       balanceAfter: finances.cash,
     })
     if (finances.history.length > 30) finances.history.length = 30
     seller.balance = finances.cash
   } else {
-    seller.balance += offer.amount
+    seller.balance += amount
   }
 
   // ----- Cassa compratore (paga) -----
   if (buyer.id === myTeamId) {
     const finances = ensureClubFinances(career)
-    finances.cash -= offer.amount
+    finances.cash -= amount
     finances.history.unshift({
       matchday: md,
       label: `Acquisto ${player.lastName} ← ${seller.shortName}`,
-      amount: -offer.amount,
+      amount: -amount,
       balanceAfter: finances.cash,
     })
     if (finances.history.length > 30) finances.history.length = 30
     buyer.balance = finances.cash
   } else {
-    buyer.balance = Math.max(0, buyer.balance - offer.amount)
+    buyer.balance = Math.max(0, buyer.balance - amount)
   }
 
   // ----- Trasferimento -----
@@ -431,23 +428,14 @@ export function acceptOffer(career: Career, offerId: EntityId): TransferActionRe
     const bench = career.club.lineup.bench
     career.club.lineup.starters = starters.filter(id => id !== player.id)
     career.club.lineup.bench = bench.filter(id => id !== player.id)
-    // Capitano venduto? Sposto su prossimo titolare disponibile
     if (career.club.tactics.captainId === player.id) {
       career.club.tactics.captainId = career.club.lineup.starters[0]
     }
   }
 
-  // ----- Status update + auto-reject doppi -----
-  offer.status = 'accepted'
-  for (const o of offers) {
-    if (o.id !== offer.id && o.playerId === offer.playerId && o.status === 'pending') {
-      o.status = 'rejected'
-    }
-  }
-
   // ----- History -----
   const completed: CompletedTransfer = {
-    id: offer.id,
+    id: generateId(createRng((career.seed ^ md ^ 0x71A461 ^ player.id.charCodeAt(0)) >>> 0)),
     matchday: md,
     date,
     playerId: player.id,
@@ -457,7 +445,7 @@ export function acceptOffer(career: Career, offerId: EntityId): TransferActionRe
     fromTeamName: seller.shortName,
     toTeamId: buyer.id,
     toTeamName: buyer.shortName,
-    amount: offer.amount,
+    amount,
     profitLoss,
     isMineSold: seller.id === myTeamId,
     isMineBought: buyer.id === myTeamId,
@@ -466,19 +454,71 @@ export function acceptOffer(career: Career, offerId: EntityId): TransferActionRe
   if (history.length > HISTORY_CAP) history.length = HISTORY_CAP
 
   // ----- News -----
-  const rngNews = createRng((career.seed ^ md ^ 0x71A460 ^ player.id.charCodeAt(0)) >>> 0)
-  const newsItem: NewsItem = {
-    id: generateId(rngNews),
-    date,
-    kind: 'transfer',
-    title: `Trasferimento ufficiale: ${completed.playerName} → ${buyer.shortName}`,
-    body: `${completed.playerName} (${player.position}) passa al ${buyer.name} per ${fmtMoneyInline(offer.amount)}.`,
-    read: false,
+  if (!opts.silent) {
+    const rngNews = createRng((career.seed ^ md ^ 0x71A460 ^ player.id.charCodeAt(0)) >>> 0)
+    const isMineInvolved = seller.id === myTeamId || buyer.id === myTeamId
+    const title = isMineInvolved
+      ? `Trasferimento ufficiale: ${completed.playerName} → ${buyer.shortName}`
+      : `Mercato: ${completed.playerName} dal ${seller.shortName} al ${buyer.shortName}`
+    career.news.unshift({
+      id: generateId(rngNews),
+      date,
+      kind: 'transfer',
+      title,
+      body: `${completed.playerName} (${player.position}) passa dal ${seller.name} al ${buyer.name} per ${fmtMoneyInline(amount)}.`,
+      read: false,
+    })
+    if (career.news.length > 50) career.news.length = 50
   }
-  career.news.unshift(newsItem)
-  if (career.news.length > 50) career.news.length = 50
 
   career.updatedAt = Date.now()
+  return completed
+}
+
+// ====== Accept / Reject ======
+
+export interface TransferActionResult {
+  ok: boolean
+  reason?: string
+  completedTransfer?: CompletedTransfer
+}
+
+/**
+ * Accetta un'offerta pending. Funziona sia per offerte AI→me (cessione) sia
+ * me→AI (acquisto, tipicamente dopo una controproposta dell'AI accettata).
+ *
+ * Esegue il transfer + marca 'accepted' + auto-reject delle altre pending per
+ * stesso player. Tutto il money/lineup/history/news è dentro `executeTransfer`.
+ */
+export function acceptOffer(career: Career, offerId: EntityId): TransferActionResult {
+  const { offers } = ensureTransferState(career)
+  const offer = offers.find(o => o.id === offerId)
+  if (!offer) return { ok: false, reason: 'Offerta non trovata.' }
+  if (offer.status !== 'pending') return { ok: false, reason: 'Offerta non più valida.' }
+
+  const player = career.players[offer.playerId]
+  const buyer = career.teams[offer.fromTeamId]
+  const seller = career.teams[offer.toTeamId]
+  if (!player || !buyer || !seller) return { ok: false, reason: 'Dati incompleti.' }
+
+  // Safety check buyer cash (per offerte mie già esistenti, evita di andare a -€)
+  const myTeamId = career.club.teamId
+  if (buyer.id === myTeamId) {
+    const finances = ensureClubFinances(career)
+    if (finances.cash < offer.amount) {
+      return { ok: false, reason: `Cassa insufficiente: servono ${fmtMoneyInline(offer.amount)}, in cassa ${fmtMoneyInline(finances.cash)}.` }
+    }
+  }
+
+  const completed = executeTransfer(career, player, seller, buyer, offer.amount, career.season.currentMatchday)
+
+  // Marca offer + auto-reject delle altre pending per stesso player
+  offer.status = 'accepted'
+  for (const o of offers) {
+    if (o.id !== offer.id && o.playerId === offer.playerId && o.status === 'pending') {
+      o.status = 'rejected'
+    }
+  }
 
   return { ok: true, completedTransfer: completed }
 }
@@ -626,6 +666,307 @@ export function rejectOffer(career: Career, offerId: EntityId): TransferActionRe
   return { ok: true }
 }
 
+// ====== Mercato attivo: io faccio offerte (Fase 3.G.2) ======
+
+/**
+ * Prezzo "richiesta" del seller AI per cedere `player`. È il dual di
+ * `buyerWillingnessCeiling`: sotto questa cifra il seller non vende, sopra
+ * accetta diretto, in fascia intermedia controfferta.
+ *
+ * Realismo: un top club vende un big SOLO se gli arriva una proposta gonfia
+ * (×1.50 MV); un piccolo club molla con una proposta vicino al MV.
+ */
+function sellerAskingPrice(
+  player: Player,
+  seller: Team,
+  playerOverall: number,
+  refYear: number
+): number {
+  const mv = player.marketValue
+  let asking = mv
+
+  // Reputation seller: più è grande il club, più alza il prezzo
+  if (seller.reputation >= 80) asking *= 1.50
+  else if (seller.reputation >= 65) asking *= 1.30
+  else if (seller.reputation >= 50) asking *= 1.15
+  else asking *= 1.05
+
+  // Top player premium (i big sono ancora più strategici)
+  if (playerOverall >= 85) asking *= 1.25
+  else if (playerOverall >= 80) asking *= 1.12
+
+  // Premio giovani con potential alto (talenti sono tenuti stretti)
+  const age = ageFromBirth(player.birthDate, refYear)
+  const pot = player.potential ?? 70
+  if (age >= 18 && age <= 22 && pot >= 80) asking *= 1.30
+
+  return asking
+}
+
+export type MyOfferOutcome = 'accepted' | 'countered' | 'rejected'
+
+export interface MyOfferResult {
+  ok: boolean
+  reason?: string
+  outcome?: MyOfferOutcome
+  /** Counter proposto dall'AI (se outcome === 'countered'). Nuova offer in pending. */
+  counterAmount?: number
+  /** Trasferimento completato (se outcome === 'accepted'). */
+  completedTransfer?: CompletedTransfer
+  /** Offer id creato (se outcome === 'countered'). Permette UI di metterla in evidenza. */
+  offerId?: EntityId
+  /** Messaggio human-readable per la UI */
+  message?: string
+}
+
+/**
+ * Sottometto una mia offerta verso un giocatore AI. AI seller valuta SUBITO:
+ *
+ * - **accepted**: amount ≥ askingPrice → transfer immediato (no offer pending)
+ * - **countered**: amount ≥ askingPrice × 0.85 → AI ti controffre al 95% dell'asking,
+ *   crea offer pending con `fromTeamId = mio` e `amount = counter`. Devo poi
+ *   decidere se accettare/rifiutare/rilanciare via `submitMyOffer` di nuovo
+ * - **rejected**: amount troppo basso → nessuna offer creata, messaggio
+ *
+ * Se `replaceOfferId` è passato, marca la vecchia offerta come 'rejected'
+ * (usato in UI per "rilancia": chiudi vecchia, apri nuova).
+ */
+export function submitMyOffer(
+  career: Career,
+  playerId: EntityId,
+  amount: number,
+  replaceOfferId?: EntityId
+): MyOfferResult {
+  if (!isTransferWindowOpen(career)) {
+    return { ok: false, reason: 'Finestra di mercato chiusa.' }
+  }
+  const player = career.players[playerId]
+  if (!player) return { ok: false, reason: 'Giocatore non trovato.' }
+  if (player.teamId === career.club.teamId) {
+    return { ok: false, reason: 'Non puoi fare offerte per un tuo giocatore.' }
+  }
+  if (!player.teamId) return { ok: false, reason: 'Giocatore svincolato (non ancora gestibile).' }
+
+  const seller = career.teams[player.teamId]
+  const buyer = career.teams[career.club.teamId]
+  if (!seller || !buyer) return { ok: false, reason: 'Dati squadra incompleti.' }
+
+  // Validazioni amount
+  if (amount <= 0) return { ok: false, reason: 'Importo non valido.' }
+  amount = Math.round(amount / 100_000) * 100_000
+
+  // Verifica cassa (con buffer 5% sicurezza)
+  const finances = ensureClubFinances(career)
+  if (amount > finances.cash) {
+    return { ok: false, reason: `Cassa insufficiente: in cassa ${fmtMoneyInline(finances.cash)}.` }
+  }
+  if (amount > finances.cash * 0.85) {
+    return { ok: false, reason: 'Non puoi spendere più dell\'85% della cassa in una singola offerta (margine sicurezza).' }
+  }
+
+  const { offers } = ensureTransferState(career)
+
+  // Replace vecchia (rilancio): marca come rejected, prossima sostituisce
+  if (replaceOfferId) {
+    const old = offers.find(o => o.id === replaceOfferId)
+    if (old && old.status === 'pending') old.status = 'rejected'
+  }
+
+  const md = career.season.currentMatchday
+  const ovr = calcOverall(player)
+  const asking = sellerAskingPrice(player, seller, ovr, career.season.year)
+  const rng = createRng((career.seed ^ md ^ playerId.charCodeAt(0) ^ 0x71A462) >>> 0)
+
+  // 1) Accetta diretto
+  if (amount >= asking) {
+    const completed = executeTransfer(career, player, seller, buyer, amount, md)
+    return {
+      ok: true,
+      outcome: 'accepted',
+      completedTransfer: completed,
+      message: `${seller.name} ha accettato la tua offerta di ${fmtMoneyInline(amount)}. ${player.firstName} ${player.lastName} è ufficialmente tuo.`,
+    }
+  }
+
+  // 2) Counter: AI propone il 92-98% dell'asking (jitter per realismo)
+  if (amount >= asking * 0.85) {
+    const counterPct = 0.92 + rng.next() * 0.06
+    const counter = Math.round(asking * counterPct / 100_000) * 100_000
+    const offer: TransferOffer = {
+      id: generateId(rng),
+      fromTeamId: buyer.id,
+      toTeamId: seller.id,
+      playerId: player.id,
+      amount: counter,
+      originalAmount: amount,
+      createdMd: md,
+      expiresMd: md + OFFER_VALIDITY_MD,
+      status: 'pending',
+      negotiationsCount: 0,
+    }
+    offers.push(offer)
+    pruneOffers(career)
+
+    // News al feed
+    career.news.unshift({
+      id: generateId(rng),
+      date: inGameDate(career, md),
+      kind: 'transfer',
+      title: `${seller.shortName} contropropone ${fmtMoneyInline(counter)} per ${player.lastName}`,
+      body: `${seller.name} valuta ${player.firstName} ${player.lastName} (${player.position}, OVR ${ovr}) almeno ${fmtMoneyInline(counter)}. Decisione richiesta entro ${OFFER_VALIDITY_MD} settimane.`,
+      read: false,
+    })
+    if (career.news.length > 50) career.news.length = 50
+
+    career.updatedAt = Date.now()
+    return {
+      ok: true,
+      outcome: 'countered',
+      counterAmount: counter,
+      offerId: offer.id,
+      message: `${seller.name} non accetta ${fmtMoneyInline(amount)} ma controffre a ${fmtMoneyInline(counter)}. Trovi l'offerta nella sezione "Le mie offerte".`,
+    }
+  }
+
+  // 3) Rifiutata (offerta troppo bassa)
+  career.updatedAt = Date.now()
+  return {
+    ok: true,
+    outcome: 'rejected',
+    message: `${seller.name} considera ${fmtMoneyInline(amount)} troppo bassa per ${player.lastName} e rifiuta categoricamente.`,
+  }
+}
+
+/**
+ * Ritira una mia offerta pending (status='pending' e fromTeamId=mio club).
+ * Marca come 'rejected'. Nessuna penalità (semplificazione 3.G.2).
+ */
+export function withdrawMyOffer(career: Career, offerId: EntityId): TransferActionResult {
+  const { offers } = ensureTransferState(career)
+  const offer = offers.find(o => o.id === offerId)
+  if (!offer) return { ok: false, reason: 'Offerta non trovata.' }
+  if (offer.status !== 'pending') return { ok: false, reason: 'Offerta non più valida.' }
+  if (offer.fromTeamId !== career.club.teamId) {
+    return { ok: false, reason: 'Puoi ritirare solo le tue offerte.' }
+  }
+  offer.status = 'rejected'
+  career.updatedAt = Date.now()
+  return { ok: true }
+}
+
+// ====== Scambi AI ↔ AI di sottofondo (Fase 3.G.2.b) ======
+
+/**
+ * Cerca un player appartenente ad un AI seller diverso da `buyer` che il buyer
+ * potrebbe voler comprare. Stessa logica di `pickMyPlayerToTarget` ma sull'intero
+ * pool di player AI (escluso mio club, escluso roster del buyer stesso).
+ *
+ * Esclude target sotto i 5 per roster del seller (no auto-distruzione AI):
+ * il seller deve avere almeno 18 player dopo la cessione.
+ */
+function pickAIPlayerToTarget(
+  career: Career,
+  buyer: Team,
+  rng: Rng
+): { player: Player; seller: Team; overall: number } | null {
+  const myTeamId = career.club.teamId
+  const buyerRoster = Object.values(career.players).filter(p => p.teamId === buyer.id)
+  if (buyerRoster.length === 0) return null
+  const buyerAvgOvr = buyerRoster.reduce((s, p) => s + calcOverall(p), 0) / buyerRoster.length
+  const threshold = buyerAvgOvr + 2
+  const maxAffordable = buyer.balance * 0.35
+
+  // Conta roster size per seller (per evitare auto-distruzione)
+  const rosterSizeByTeam = new Map<EntityId, number>()
+  for (const p of Object.values(career.players)) {
+    if (!p.teamId) continue
+    rosterSizeByTeam.set(p.teamId, (rosterSizeByTeam.get(p.teamId) ?? 0) + 1)
+  }
+
+  type Cand = { player: Player; seller: Team; overall: number; weight: number }
+  const candidates: Cand[] = []
+  for (const p of Object.values(career.players)) {
+    if (!p.teamId) continue
+    if (p.teamId === myTeamId) continue          // no mio (gestito da pickMyPlayerToTarget)
+    if (p.teamId === buyer.id) continue          // non da se stesso
+    if ((rosterSizeByTeam.get(p.teamId) ?? 0) <= 18) continue  // seller troppo piccolo
+    if (p.marketValue > maxAffordable) continue
+    const ovr = calcOverall(p)
+    if (ovr <= threshold) continue
+    const seller = career.teams[p.teamId]
+    if (!seller) continue
+    candidates.push({ player: p, seller, overall: ovr, weight: Math.pow(ovr - threshold, 2) })
+  }
+  if (candidates.length === 0) return null
+
+  const total = candidates.reduce((s, c) => s + c.weight, 0)
+  let r = rng.next() * total
+  for (const c of candidates) {
+    r -= c.weight
+    if (r <= 0) return { player: c.player, seller: c.seller, overall: c.overall }
+  }
+  const last = candidates[candidates.length - 1]
+  return { player: last.player, seller: last.seller, overall: last.overall }
+}
+
+/**
+ * Probabilità che un AI buyer tenti uno scambio AI↔AI in un dato matchday.
+ * Tarata per ottenere ~2-3 trasferimenti completati per MD durante window
+ * (39 buyers × ~0.18 prob × ~30% accept-rate ≈ 2 finalize/MD).
+ *
+ * Più contenuta della prob di offerta-verso-me perché qui ogni evento
+ * genera SUBITO un trasferimento (non un'offerta che può essere rifiutata).
+ */
+function aiToAiProbForReputation(rep: number): number {
+  if (rep >= 80) return 0.30
+  if (rep >= 65) return 0.20
+  if (rep >= 50) return 0.12
+  return 0.05
+}
+
+/**
+ * Tick scambi AI↔AI di sottofondo durante la finestra di mercato.
+ * Ogni AI buyer ha prob di tentare un acquisto da un altro AI seller. Se
+ * offer ≥ askingPrice → finalize immediato via executeTransfer (silenziato:
+ * news condensata, no spam). Esiti negativi sono silenziosi (no news).
+ *
+ * Da chiamare DOPO `tickTransferOffers` in advanceMatchday.
+ * Determinismo: rng dedicato da `seed ^ md ^ 0x71A463`.
+ */
+export function tickAIToAITransfers(career: Career, matchday: number): void {
+  if (currentTransferWindow(matchday) === 'closed') return
+
+  const rng = createRng((career.seed ^ matchday ^ 0x71A463) >>> 0)
+  const myTeamId = career.club.teamId
+  const refYear = career.season.year
+
+  const aiBuyers = Object.values(career.teams)
+    .filter(t => t.id !== myTeamId)
+    .sort((a, b) => a.id.localeCompare(b.id))
+
+  let finalizedThisTick = 0
+  const MAX_PER_TICK = 4  // hard cap per non spammare news feed
+
+  for (const buyer of aiBuyers) {
+    if (finalizedThisTick >= MAX_PER_TICK) break
+    if (buyer.balance < 5_000_000) continue
+    if (!rng.chance(aiToAiProbForReputation(buyer.reputation))) continue
+
+    const target = pickAIPlayerToTarget(career, buyer, rng)
+    if (!target) continue
+
+    const offerAmount = computeOfferAmount(target.player, buyer, refYear, rng, target.overall)
+    if (offerAmount > buyer.balance * 0.5) continue
+
+    const asking = sellerAskingPrice(target.player, target.seller, target.overall, refYear)
+    // Per AI↔AI: niente trattativa, accetta solo se offerAmount ≥ asking
+    if (offerAmount < asking) continue
+
+    executeTransfer(career, target.player, target.seller, buyer, offerAmount, matchday)
+    finalizedThisTick++
+  }
+}
+
 // ====== Helpers per UI ======
 
 /** Offerte pending verso il mio club (per inbox) */
@@ -633,4 +974,11 @@ export function pendingOffersForMyClub(career: Career): TransferOffer[] {
   const { offers } = ensureTransferState(career)
   const myId = career.club.teamId
   return offers.filter(o => o.status === 'pending' && o.toTeamId === myId)
+}
+
+/** Offerte pending dove SONO IO il buyer (counter dell'AI alle mie submission) */
+export function pendingOffersFromMyClub(career: Career): TransferOffer[] {
+  const { offers } = ensureTransferState(career)
+  const myId = career.club.teamId
+  return offers.filter(o => o.status === 'pending' && o.fromTeamId === myId)
 }

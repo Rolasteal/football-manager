@@ -12,12 +12,16 @@
     acceptOffer,
     rejectOffer,
     negotiateOffer,
+    submitMyOffer,
+    withdrawMyOffer,
     computeInterestLevel,
     type InterestLevel,
     type NegotiateOutcome,
+    type MyOfferOutcome,
   } from '$engine/career/transfers'
   import { calcOverall } from '$engine/gen/player'
-  import type { TransferOffer, CompletedTransfer } from '$engine/career/types'
+  import type { TransferOffer, CompletedTransfer, NewsItem } from '$engine/career/types'
+  import type { Player, Position } from '$engine/types'
 
   const store = careerStore()
   let career = $derived(store.career)
@@ -37,6 +41,13 @@
       : (career.transferOffers ?? []).filter(o => o.status === 'pending' && o.toTeamId === career.club.teamId)
   )
 
+  // 3.G.2: offerte pending dove SONO IO il buyer (counter dell'AI a mie submission)
+  let myOffers = $derived<TransferOffer[]>(
+    !career
+      ? []
+      : (career.transferOffers ?? []).filter(o => o.status === 'pending' && o.fromTeamId === career.club.teamId)
+  )
+
   let history = $derived<CompletedTransfer[]>(career?.transferHistory ?? [])
 
   // Plusvalenze stagione corrente (somma profitLoss su cessioni in questa season)
@@ -49,12 +60,49 @@
   let actionMsg = $state<string | null>(null)
   let actionOk = $state(false)
 
+  // ====== Tabs ======
+  type Tab = 'received' | 'mine' | 'search' | 'history'
+  let activeTab = $state<Tab>('received')
+
   // ====== Stato modale trattativa ======
   let negotiatingOffer = $state<TransferOffer | null>(null)
   let counterAmount = $state<number>(0)
   let negotiateMsg = $state<string | null>(null)
   let negotiateOk = $state(false)
   let negotiateOutcome = $state<NegotiateOutcome | null>(null)
+
+  // ====== Stato modale "Fai offerta" (3.G.2) ======
+  let offerPlayerTarget = $state<Player | null>(null)
+  let offerAmount = $state<number>(0)
+  let offerMsg = $state<string | null>(null)
+  let offerOk = $state(false)
+  let offerOutcome = $state<MyOfferOutcome | null>(null)
+  let replaceOfferId = $state<string | undefined>(undefined)
+
+  // ====== Filtri ricerca giocatori (3.G.2) ======
+  type RoleFilter = 'ALL' | 'GK' | 'DEF' | 'MID' | 'ATT'
+  let filterRole = $state<RoleFilter>('ALL')
+  let filterOvrMin = $state<number>(70)
+  let filterAgeMax = $state<number>(34)
+  let filterBudgetMax = $state<number>(0)  // 0 = no cap (calcolato da finances)
+  let searchActive = $state(false)
+  let searchResults = $state<Player[]>([])
+
+  const POSITION_GROUP: Record<Position, 'GK' | 'DEF' | 'MID' | 'ATT'> = {
+    GK: 'GK',
+    CB: 'DEF', LB: 'DEF', RB: 'DEF', WB: 'DEF',
+    DM: 'MID', CM: 'MID', AM: 'MID', LM: 'MID', RM: 'MID',
+    LW: 'ATT', RW: 'ATT', CF: 'ATT', ST: 'ATT',
+  }
+
+  function playerAge(p: Player): number {
+    const b = new Date(p.birthDate)
+    const ref = career ? new Date(`${career.season.year}-07-01`) : new Date()
+    let a = ref.getUTCFullYear() - b.getUTCFullYear()
+    const m = ref.getUTCMonth() - b.getUTCMonth()
+    if (m < 0 || (m === 0 && ref.getUTCDate() < b.getUTCDate())) a--
+    return a
+  }
 
   onMount(() => {
     if (!career) {
@@ -147,6 +195,85 @@
     }
   }
 
+  // ====== Mercato attivo (3.G.2) ======
+
+  async function handleWithdraw(o: TransferOffer) {
+    if (!career) return
+    const res = withdrawMyOffer(career, o.id)
+    if (res.ok) {
+      actionOk = true
+      const p = playerOfOffer(o)
+      actionMsg = `Offerta ritirata${p ? ` per ${p.firstName} ${p.lastName}` : ''}.`
+      await persistActiveCareer()
+    } else {
+      actionOk = false
+      actionMsg = res.reason ?? 'Operazione non riuscita.'
+    }
+    setTimeout(() => { actionMsg = null }, 3500)
+  }
+
+  function openMakeOffer(player: Player, replaceId?: string) {
+    offerPlayerTarget = player
+    // Default: 5% sopra MV per partire competitivi
+    offerAmount = Math.round(player.marketValue * 1.05 / 100_000) * 100_000
+    offerMsg = null
+    offerOutcome = null
+    replaceOfferId = replaceId
+  }
+
+  function closeMakeOffer() {
+    offerPlayerTarget = null
+    offerAmount = 0
+    offerMsg = null
+    offerOutcome = null
+    replaceOfferId = undefined
+  }
+
+  function setOfferPct(pct: number) {
+    if (!offerPlayerTarget) return
+    offerAmount = Math.round(offerPlayerTarget.marketValue * (1 + pct / 100) / 100_000) * 100_000
+  }
+
+  async function handleSubmitMyOffer() {
+    if (!career || !offerPlayerTarget) return
+    const res = submitMyOffer(career, offerPlayerTarget.id, offerAmount, replaceOfferId)
+    offerOk = res.ok
+    offerMsg = res.message ?? res.reason ?? null
+    offerOutcome = res.outcome ?? null
+    if (res.ok) {
+      await persistActiveCareer()
+      // accepted = trasferimento fatto → chiudi dopo 3s
+      // countered = AI ha contropreposto, offer pending → chiudi dopo 4s, l'offerta appare in "Le mie offerte"
+      // rejected = AI ha rifiutato → chiudi dopo 3s
+      const delay = res.outcome === 'rejected' ? 2800 : 3500
+      setTimeout(() => closeMakeOffer(), delay)
+    }
+  }
+
+  function runSearch() {
+    if (!career) return
+    const myId = career.club.teamId
+    const all = Object.values(career.players)
+    const budget = filterBudgetMax > 0 ? filterBudgetMax : (finances?.cash ?? 0)
+    const results = all.filter(p => {
+      if (!p.teamId || p.teamId === myId) return false
+      if (calcOverall(p) < filterOvrMin) return false
+      if (playerAge(p) > filterAgeMax) return false
+      if (p.marketValue > budget) return false
+      if (filterRole !== 'ALL' && POSITION_GROUP[p.position] !== filterRole) return false
+      return true
+    })
+    // Ordina per OVR desc, limita a 30 per non sovraccaricare UI
+    results.sort((a, b) => calcOverall(b) - calcOverall(a))
+    searchResults = results.slice(0, 30)
+    searchActive = true
+  }
+
+  function clearSearch() {
+    searchResults = []
+    searchActive = false
+  }
+
   function interestColor(level: InterestLevel): string {
     if (level === 'forte') return 'interest-strong'
     if (level === 'esplorativo') return 'interest-low'
@@ -168,7 +295,11 @@
   function openPlayer(id: string) { push(`/player/${id}`) }
 </script>
 
-<svelte:window onkeydown={(e) => { if (e.key === 'Escape' && negotiatingOffer) closeNegotiate() }} />
+<svelte:window onkeydown={(e) => {
+  if (e.key !== 'Escape') return
+  if (negotiatingOffer) closeNegotiate()
+  else if (offerPlayerTarget) closeMakeOffer()
+}} />
 
 <AppShell>
   {#if !career || !myTeam || !finances}
@@ -218,6 +349,49 @@
       </div>
     {/if}
 
+    <!-- ====== Tabs ====== -->
+    <div class="tabs" role="tablist">
+      <button
+        class="tab"
+        class:active={activeTab === 'received'}
+        onclick={() => activeTab = 'received'}
+        role="tab"
+        aria-selected={activeTab === 'received'}
+      >
+        📥 Ricevute
+        {#if pendingOffers.length > 0}<span class="tab-badge">{pendingOffers.length}</span>{/if}
+      </button>
+      <button
+        class="tab"
+        class:active={activeTab === 'mine'}
+        onclick={() => activeTab = 'mine'}
+        role="tab"
+        aria-selected={activeTab === 'mine'}
+      >
+        📤 Le mie
+        {#if myOffers.length > 0}<span class="tab-badge mine">{myOffers.length}</span>{/if}
+      </button>
+      <button
+        class="tab"
+        class:active={activeTab === 'search'}
+        onclick={() => activeTab = 'search'}
+        role="tab"
+        aria-selected={activeTab === 'search'}
+      >
+        🔍 Cerca giocatori
+      </button>
+      <button
+        class="tab"
+        class:active={activeTab === 'history'}
+        onclick={() => activeTab = 'history'}
+        role="tab"
+        aria-selected={activeTab === 'history'}
+      >
+        📒 Storico
+      </button>
+    </div>
+
+    {#if activeTab === 'received'}
     <section>
       <h2 class="section-h">Offerte ricevute</h2>
       {#if pendingOffers.length === 0}
@@ -284,7 +458,158 @@
         </div>
       {/if}
     </section>
+    {/if}
 
+    {#if activeTab === 'mine'}
+    <section>
+      <h2 class="section-h">Le mie offerte</h2>
+      {#if myOffers.length === 0}
+        <div class="empty card-gold">
+          <span class="empty-icon">📤</span>
+          <p>
+            Non hai offerte in corso verso giocatori AI. Vai su <button class="link-btn" onclick={() => activeTab = 'search'}>Cerca giocatori</button> per fare la tua prima proposta.
+          </p>
+        </div>
+      {:else}
+        <div class="offers-list">
+          {#each myOffers as o (o.id)}
+            {@const p = career.players[o.playerId]}
+            {@const seller = career.teams[o.toTeamId]}
+            {#if p && seller}
+              {@const ovr = calcOverall(p)}
+              {@const expIn = o.expiresMd - career.season.currentMatchday}
+              {@const interest = computeInterestLevel(o.amount, p.marketValue)}
+              <article class="offer-card card-gold">
+                <div class="offer-buyer">
+                  <span class="crest" style="--c1: {seller.primaryColor}; --c2: {seller.secondaryColor};">{seller.shortName}</span>
+                  <div class="offer-buyer-info">
+                    <div class="buyer-name">{seller.name}</div>
+                    <div class="buyer-meta">Controproposta da loro · Reputation {seller.reputation}</div>
+                  </div>
+                </div>
+                <div class="offer-arrow">↩</div>
+                <button class="offer-player" onclick={() => openPlayer(p.id)} title="Vedi scheda giocatore">
+                  <div class="player-pos">{p.position}</div>
+                  <div class="player-name-wrap">
+                    <div class="player-name">{p.firstName} <strong>{p.lastName}</strong></div>
+                    <div class="player-meta">OVR {ovr} · Valore {fmtMoney(p.marketValue)}</div>
+                  </div>
+                </button>
+                <div class="offer-amount-wrap">
+                  <div class="amount-l">Loro richiedono</div>
+                  <div class="amount-v text-gold">{fmtMoney(o.amount)}</div>
+                  {#if o.originalAmount && o.originalAmount !== o.amount}
+                    <div class="amount-delta">Tu offrivi {fmtMoney(o.originalAmount)}</div>
+                  {/if}
+                  <span class="interest-chip {interestColor(interest)}">{interestLabel(interest)}</span>
+                </div>
+                <div class="offer-actions">
+                  <div class="expire-chip" class:urgent={expIn <= 1}>Scade in {expIn} g.</div>
+                  <button class="btn-gold accept-btn" onclick={() => handleAccept(o)}>✓ Accetta</button>
+                  <button class="btn-trattativa" onclick={() => openMakeOffer(p, o.id)}>
+                    💬 Rilancia
+                  </button>
+                  <button class="btn-reject" onclick={() => handleWithdraw(o)}>✗ Ritira</button>
+                </div>
+              </article>
+            {/if}
+          {/each}
+        </div>
+      {/if}
+    </section>
+    {/if}
+
+    {#if activeTab === 'search'}
+    <section>
+      <h2 class="section-h">Cerca giocatori sul mercato</h2>
+      <div class="search-filters card-gold">
+        <div class="filter-row">
+          <label class="filter-l">
+            Ruolo
+            <select bind:value={filterRole} class="filter-select">
+              <option value="ALL">Tutti</option>
+              <option value="GK">Portieri</option>
+              <option value="DEF">Difensori</option>
+              <option value="MID">Centrocampisti</option>
+              <option value="ATT">Attaccanti</option>
+            </select>
+          </label>
+          <label class="filter-l">
+            OVR minimo
+            <input type="number" bind:value={filterOvrMin} min="40" max="99" class="filter-input" />
+          </label>
+          <label class="filter-l">
+            Età massima
+            <input type="number" bind:value={filterAgeMax} min="16" max="40" class="filter-input" />
+          </label>
+          <label class="filter-l">
+            Budget max (€, 0=cassa)
+            <input type="number" bind:value={filterBudgetMax} min="0" step="500000" class="filter-input" />
+          </label>
+          <button class="btn-gold filter-btn" onclick={runSearch}>🔍 Cerca</button>
+          {#if searchActive}
+            <button class="btn-reject filter-btn" onclick={clearSearch}>Reset</button>
+          {/if}
+        </div>
+        {#if window === 'closed'}
+          <div class="filter-warn">⚠ Finestra di mercato chiusa. Puoi cercare ma non inviare offerte.</div>
+        {/if}
+      </div>
+
+      {#if searchActive}
+        {#if searchResults.length === 0}
+          <div class="empty card-gold">
+            <span class="empty-icon">🚫</span>
+            <p>Nessun giocatore trovato con questi filtri. Prova ad allargare i criteri (OVR più basso o budget più alto).</p>
+          </div>
+        {:else}
+          <div class="search-results card-gold">
+            <div class="search-summary">{searchResults.length} risultati (top 30 per OVR)</div>
+            {#each searchResults as p (p.id)}
+              {@const team = p.teamId ? career.teams[p.teamId] : null}
+              {@const ovr = calcOverall(p)}
+              <div class="search-row">
+                <button class="search-player" onclick={() => openPlayer(p.id)} title="Vedi scheda giocatore">
+                  <span class="hpos">{p.position}</span>
+                  <span class="search-name">{p.firstName} <strong>{p.lastName}</strong></span>
+                  <span class="search-age">{playerAge(p)} anni</span>
+                </button>
+                <div class="search-team">
+                  {#if team}
+                    <span class="crest small" style="--c1: {team.primaryColor}; --c2: {team.secondaryColor};">{team.shortName}</span>
+                    <span class="search-team-name">{team.name}</span>
+                  {/if}
+                </div>
+                <div class="search-stat">
+                  <span class="stat-l">OVR</span>
+                  <span class="stat-v text-gold">{ovr}</span>
+                </div>
+                <div class="search-stat">
+                  <span class="stat-l">Valore</span>
+                  <span class="stat-v">{fmtMoney(p.marketValue)}</span>
+                </div>
+                <button
+                  class="btn-trattativa search-offer-btn"
+                  onclick={() => openMakeOffer(p)}
+                  disabled={window === 'closed'}
+                  title={window === 'closed' ? 'Mercato chiuso' : 'Fai un\'offerta'}
+                >
+                  💰 Fai offerta
+                </button>
+              </div>
+            {/each}
+          </div>
+        {/if}
+      {:else}
+        <div class="empty card-gold">
+          <span class="empty-icon">🔍</span>
+          <p>Imposta i filtri e premi <strong>Cerca</strong> per esplorare i giocatori sul mercato. Solo player di altri club sono mostrati.</p>
+        </div>
+      {/if}
+    </section>
+    {/if}
+
+    {#if activeTab === 'history'}
     <section class="history-sec">
       <h2 class="section-h">Storico trasferimenti</h2>
       {#if history.length === 0}
@@ -322,6 +647,7 @@
         </div>
       {/if}
     </section>
+    {/if}
 
     <section class="info-note">
       <p>
@@ -329,12 +655,9 @@
         Fuori da questi periodi nessuna squadra può fare nuove offerte.
       </p>
       <p>
-        Le offerte ricevute hanno validità di <strong>2 giornate</strong>: oltre quel termine scadono automaticamente.
-        Accettando, il giocatore lascia immediatamente la rosa e l'incasso entra in cassa.
-      </p>
-      <p>
-        Puoi avviare fino a <strong>2 trattative</strong> per offerta proponendo una controproposta. L'AI valuterà
-        in base alla sua reputation, al budget e al valore del giocatore: può <strong>accettare</strong>, <strong>rilanciare</strong> a un punto intermedio o <strong>chiudere</strong> definitivamente.
+        Le offerte hanno validità di <strong>2 giornate</strong>. Accettando, il giocatore cambia squadra
+        immediatamente e i soldi si muovono. Le <strong>controproposte AI</strong> alle tue offerte compaiono
+        nella tab "Le mie". I trasferimenti tra altre squadre (AI↔AI) vengono mostrati nello "Storico" e nelle news.
       </p>
     </section>
 
@@ -428,10 +751,299 @@
         </div>
       {/if}
     {/if}
+
+    <!-- ====== Modale Fai offerta (3.G.2) ====== -->
+    {#if offerPlayerTarget}
+      {@const p = offerPlayerTarget}
+      {@const seller = p.teamId ? career.teams[p.teamId] : null}
+      {#if seller}
+        <div
+          class="modal-backdrop"
+          onclick={closeMakeOffer}
+          onkeydown={(e) => { if (e.key === 'Escape') closeMakeOffer() }}
+          role="presentation"
+          tabindex="-1"
+        >
+          <div
+            class="modal-trattativa card-gold"
+            onclick={(e) => e.stopPropagation()}
+            onkeydown={(e) => e.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="modal-title-offerta"
+            tabindex="-1"
+          >
+            <header class="modal-head">
+              <div class="modal-h-l">
+                <span class="crest" style="--c1: {seller.primaryColor}; --c2: {seller.secondaryColor};">{seller.shortName}</span>
+                <div>
+                  <h3 class="modal-title" id="modal-title-offerta">
+                    {replaceOfferId ? 'Rilancia offerta' : 'Fai un\'offerta'}
+                  </h3>
+                  <div class="modal-sub">
+                    Per <strong>{p.firstName} {p.lastName}</strong> · {p.position} · OVR {calcOverall(p)} · Valore {fmtMoney(p.marketValue)} · Club: {seller.name}
+                  </div>
+                </div>
+              </div>
+              <button class="modal-close" onclick={closeMakeOffer} aria-label="Chiudi">✗</button>
+            </header>
+
+            <div class="modal-stats">
+              <div class="stat">
+                <span class="stat-l">Valore mercato</span>
+                <span class="stat-v">{fmtMoney(p.marketValue)}</span>
+              </div>
+              <div class="stat">
+                <span class="stat-l">Tua cassa</span>
+                <span class="stat-v text-gold">{fmtMoney(finances.cash)}</span>
+              </div>
+              <div class="stat">
+                <span class="stat-l">Età</span>
+                <span class="stat-v">{playerAge(p)} anni</span>
+              </div>
+            </div>
+
+            <div class="modal-form">
+              <label class="counter-label">
+                <span>La tua offerta</span>
+                <div class="counter-input-wrap">
+                  <span class="counter-prefix">€</span>
+                  <input
+                    type="number"
+                    class="counter-input"
+                    bind:value={offerAmount}
+                    min="100000"
+                    step="100000"
+                  />
+                </div>
+              </label>
+              <div class="counter-presets">
+                <button class="preset-btn" onclick={() => setOfferPct(-5)}>-5% MV</button>
+                <button class="preset-btn" onclick={() => setOfferPct(0)}>MV</button>
+                <button class="preset-btn" onclick={() => setOfferPct(10)}>+10%</button>
+                <button class="preset-btn" onclick={() => setOfferPct(25)}>+25%</button>
+                <button class="preset-btn" onclick={() => setOfferPct(50)}>+50%</button>
+              </div>
+              <div class="form-hint">
+                <strong>Tip:</strong> il prezzo di richiesta del club venditore dipende dalla sua reputation, dall'OVR del giocatore
+                e dall'età. I top club non vendono i big sotto il +50% del valore. Offerte molto basse vengono rifiutate senza
+                trattativa.
+              </div>
+            </div>
+
+            {#if offerMsg}
+              <div class="negotiate-result"
+                class:ok={offerOk && offerOutcome === 'accepted'}
+                class:warn={offerOk && offerOutcome === 'countered'}
+                class:err={!offerOk || offerOutcome === 'rejected'}>
+                {offerMsg}
+              </div>
+            {/if}
+
+            <div class="modal-actions">
+              <button
+                class="btn-trattativa modal-submit"
+                onclick={handleSubmitMyOffer}
+                disabled={window === 'closed' || offerAmount <= 0 || offerAmount > finances.cash * 0.85}
+              >
+                {#if window === 'closed'}🚫 Mercato chiuso{:else}💰 Invia offerta{/if}
+              </button>
+              <button class="btn-reject modal-reject" onclick={closeMakeOffer}>
+                Chiudi
+              </button>
+            </div>
+          </div>
+        </div>
+      {/if}
+    {/if}
   {/if}
 </AppShell>
 
 <style>
+  /* ===== TABS (3.G.2) ===== */
+  .tabs {
+    display: flex;
+    gap: 6px;
+    margin: 14px 0 18px;
+    border-bottom: 1px solid rgba(252, 211, 77, 0.18);
+    overflow-x: auto;
+  }
+  .tab {
+    background: none;
+    border: 0;
+    color: #b8b0a0;
+    font-family: inherit;
+    font-weight: 700;
+    font-size: 13px;
+    padding: 10px 16px;
+    cursor: pointer;
+    position: relative;
+    transition: color 0.15s;
+    white-space: nowrap;
+    letter-spacing: 0.02em;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .tab:hover { color: #fef3c7; }
+  .tab.active {
+    color: #fcd34d;
+  }
+  .tab.active::after {
+    content: '';
+    position: absolute;
+    left: 12px; right: 12px; bottom: -1px;
+    height: 2px;
+    background: linear-gradient(90deg, #b45309, #fcd34d, #fde68a);
+    border-radius: 2px 2px 0 0;
+  }
+  .tab-badge {
+    background: rgba(252, 211, 77, 0.20);
+    color: #fde68a;
+    border: 1px solid rgba(252, 211, 77, 0.4);
+    padding: 1px 7px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 800;
+    font-variant-numeric: tabular-nums;
+  }
+  .tab-badge.mine {
+    background: rgba(99, 102, 241, 0.20);
+    color: #c7d2fe;
+    border-color: rgba(99, 102, 241, 0.45);
+  }
+
+  /* ===== SEARCH FILTERS ===== */
+  .search-filters {
+    padding: 16px 18px;
+    margin-bottom: 14px;
+  }
+  .filter-row {
+    display: flex;
+    gap: 14px;
+    flex-wrap: wrap;
+    align-items: flex-end;
+  }
+  .filter-l {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    color: #d4cfc1;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    min-width: 110px;
+  }
+  .filter-select,
+  .filter-input {
+    background: rgba(0, 0, 0, 0.5);
+    border: 1px solid rgba(252, 211, 77, 0.28);
+    color: #fef3c7;
+    border-radius: 6px;
+    padding: 8px 10px;
+    font-size: 13px;
+    font-weight: 600;
+    font-family: inherit;
+    font-variant-numeric: tabular-nums;
+  }
+  .filter-select:focus,
+  .filter-input:focus {
+    outline: none;
+    border-color: rgba(252, 211, 77, 0.6);
+    box-shadow: 0 0 0 3px rgba(252, 211, 77, 0.12);
+  }
+  .filter-btn {
+    padding: 9px 16px;
+    font-size: 13px;
+    height: fit-content;
+  }
+  .filter-warn {
+    margin-top: 10px;
+    padding: 8px 12px;
+    background: rgba(220, 38, 38, 0.10);
+    color: #fca5a5;
+    border: 1px solid rgba(220, 38, 38, 0.35);
+    border-radius: 6px;
+    font-size: 12px;
+  }
+
+  /* ===== SEARCH RESULTS ===== */
+  .search-results { padding: 6px 8px; }
+  .search-summary {
+    padding: 8px 12px;
+    color: #918778;
+    font-size: 11.5px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    border-bottom: 1px solid rgba(252, 211, 77, 0.10);
+    margin-bottom: 4px;
+  }
+  .search-row {
+    display: grid;
+    grid-template-columns: minmax(240px, 1fr) minmax(180px, 1fr) 80px 110px 130px;
+    gap: 14px;
+    align-items: center;
+    padding: 10px 14px;
+    border-bottom: 1px solid rgba(252, 211, 77, 0.06);
+    font-size: 13px;
+  }
+  .search-row:last-child { border-bottom: 0; }
+  .search-player {
+    background: none; border: 0;
+    cursor: pointer;
+    text-align: left;
+    color: #fef3c7;
+    font-family: inherit;
+    font-size: 13px;
+    padding: 4px 0;
+    display: flex; align-items: center; gap: 10px;
+  }
+  .search-player:hover { color: #fde68a; }
+  .search-player:hover .search-name { text-decoration: underline; }
+  .search-name strong { font-weight: 800; }
+  .search-age { color: #918778; font-size: 11px; font-weight: 600; }
+  .search-team {
+    display: flex; align-items: center; gap: 8px;
+    color: #d4cfc1;
+    font-size: 12px;
+  }
+  .search-team-name {
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    max-width: 180px;
+  }
+  .crest.small { width: 28px; height: 28px; font-size: 10px; }
+  .search-stat { display: flex; flex-direction: column; gap: 2px; align-items: flex-start; }
+  .search-stat .stat-l { color: #918778; font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.08em; font-weight: 700; }
+  .search-stat .stat-v { color: #fef3c7; font-weight: 800; font-size: 14px; font-variant-numeric: tabular-nums; }
+  .search-offer-btn { padding: 7px 12px; font-size: 12px; }
+
+  /* ===== LINK BTN inline ===== */
+  .link-btn {
+    background: none; border: 0;
+    color: #fcd34d;
+    cursor: pointer;
+    text-decoration: underline;
+    font-family: inherit;
+    font-size: inherit;
+    padding: 0 2px;
+  }
+  .link-btn:hover { color: #fde68a; }
+
+  /* ===== FORM HINT ===== */
+  .form-hint {
+    margin-top: 10px;
+    padding: 10px 12px;
+    background: rgba(99, 102, 241, 0.08);
+    border: 1px solid rgba(99, 102, 241, 0.22);
+    color: #c7d2fe;
+    border-radius: 6px;
+    font-size: 11.5px;
+    line-height: 1.5;
+  }
+  .form-hint strong { color: #e0e7ff; }
+
   .loading { display: grid; place-items: center; min-height: 50vh; }
   .spinner {
     width: 36px; height: 36px;
@@ -928,5 +1540,7 @@
     .offer-actions { flex-direction: row; align-items: center; }
     .hist-row { grid-template-columns: 50px 1fr; row-gap: 4px; }
     .hist-flow, .hist-amount, .hist-tag { grid-column: 2; text-align: left; }
+    .search-row { grid-template-columns: 1fr 1fr; row-gap: 6px; }
+    .search-team, .search-stat, .search-offer-btn { grid-column: auto; }
   }
 </style>

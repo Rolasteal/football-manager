@@ -21,7 +21,7 @@ import { simulateMatch } from '$engine/match/engine'
 import { calcOverall } from '$engine/gen/player'
 import { initClubFinances, weeklyTick as financesWeeklyTick, applyMatchdayGate } from './finances'
 import { ensureAllPlayersContracts, refreshMyClubWageBudget } from './contracts'
-import { tickTransferOffers } from './transfers'
+import { tickTransferOffers, tickAIToAITransfers } from './transfers'
 
 // ====== Formazioni standard ======
 
@@ -426,6 +426,10 @@ export function advanceMatchday(career: Career): AdvanceMatchdayResult {
   // Fase 3.G.1: tick mercato (genera offerte AI verso mio club se window aperta,
   // scade le pending vecchie). md = matchday APPENA giocato.
   tickTransferOffers(career, md)
+
+  // Fase 3.G.2.b: scambi AI↔AI di sottofondo (max 4 finalize/MD, solo durante
+  // window. News condensate per non spammare).
+  tickAIToAITransfers(career, md)
 
   // Mantieni news a max 50
   if (career.news.length > 50) career.news.length = 50
