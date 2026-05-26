@@ -207,4 +207,11 @@ export interface Career {
    * plusvalenze. Opzionale per backward-compat (idem sopra).
    */
   transferHistory?: CompletedTransfer[]
+
+  /**
+   * Flag migration one-shot: i marketValue di tutti i player sono stati ricalibrati
+   * con la formula corretta (Serie A 2024). Setato da `ensureMarketValuesCalibrated`.
+   * Fase 3.G fix-values.
+   */
+  marketValuesV2?: boolean
 }

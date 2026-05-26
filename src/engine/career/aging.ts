@@ -241,47 +241,98 @@ function applyDeltaToAttributes(
 // ====== Ricalcolo valore mercato ======
 
 /**
- * Ricalcola marketValue dopo l'aging. Curva età × overall, stile transfermarkt.
+ * Ricalcola marketValue calibrato su Serie A 2024.
  *
- * Formula:
- *   base = overall^3.2 * 1000 (€)
- *   ageFactor:
- *     16-17: 0.35  (rischio + lontano da picco)
- *     18-20: 0.55
- *     21-23: 0.85
- *     24-28: 1.00  (picco di valore)
- *     29-30: 0.85
- *     31-32: 0.60
- *     33-34: 0.40
- *     35+:   0.20
- *   GK shift: i portieri hanno il picco più tardi (~+3 anni), quindi ageFactor
- *   per GK è calcolato su (age - 3).
+ * BUG STORICO (fixato qui): la vecchia formula `overall^3.2 * 1000 * factor`
+ * usava una scala incompatibile (in `generatePlayer` era applicata a
+ * `overallProxy` su 1-20, in aging.ts a `calcOverall` su 30-99 → numeri
+ * incoerenti tra creazione e tick). Risultato: OVR 92 valutato €2M.
  *
- * Es: ATT overall 80 a 26 anni: 80^3.2 * 1000 * 1.0 = €1.06M * 1.0 = ~€1.06M
- *     ATT overall 80 a 22 anni: stesso ovr ma ageFactor 0.85 = ~€900k
- *     ATT overall 80 a 32 anni: 0.60 = ~€636k
+ * NUOVA formula esponenziale unificata su scala calcOverall (30-99):
+ *   base = 1.85^((overall - 50) / 5) × €1.2M
+ *
+ * Esempi (peak age 24-28, ageFactor 1.0):
+ *   OVR 60: €4.1M    OVR 75: €26M
+ *   OVR 65: €7.6M    OVR 80: €48M
+ *   OVR 70: €14M     OVR 85: €89M
+ *                    OVR 90: €165M
+ *                    OVR 92: €189M
+ *                    OVR 95: €305M (~ Mbappé/Haaland)
+ *
+ * ageFactor:
+ *   16-17: 0.45  (giovani in pre-picco, valore basso ma in salita)
+ *   18-20: 0.65
+ *   21-23: 0.90
+ *   24-28: 1.00  (picco)
+ *   29-30: 0.85
+ *   31-32: 0.60
+ *   33-34: 0.35
+ *   35+:   0.15
+ *
+ * GK shift: portieri hanno picco +3 anni più tardi (ageFactor calcolato su age-3).
+ *
+ * potBonus per giovani con margine di crescita (Fase 3.B/3.G integrazione):
+ *   age ≤ 22 e potential-overall ≥ 10 → ×1.5 (crack sottostimato)
+ *   age ≤ 22 e potential-overall ≥ 5  → ×1.25 (talento)
+ *
+ * Arrotondamento a 100k per leggibilità UI.
  */
-export function recalculateMarketValue(player: Player): number {
+export function recalculateMarketValue(player: Player, refYear?: number): number {
   const overall = calcOverall(player)
-  const realAge = ageFromBirthDate(player.birthDate)
+  const realAge = ageFromBirthDate(player.birthDate, refYear)
   const effAge = player.position === 'GK' ? Math.max(16, realAge - 3) : realAge
 
-  let factor: number
-  if (effAge <= 17) factor = 0.35
-  else if (effAge <= 20) factor = 0.55
-  else if (effAge <= 23) factor = 0.85
-  else if (effAge <= 28) factor = 1.00
-  else if (effAge <= 30) factor = 0.85
-  else if (effAge <= 32) factor = 0.60
-  else if (effAge <= 34) factor = 0.40
-  else factor = 0.20
+  let ageFactor: number
+  if (effAge <= 17) ageFactor = 0.45
+  else if (effAge <= 20) ageFactor = 0.65
+  else if (effAge <= 23) ageFactor = 0.90
+  else if (effAge <= 28) ageFactor = 1.00
+  else if (effAge <= 30) ageFactor = 0.85
+  else if (effAge <= 32) ageFactor = 0.60
+  else if (effAge <= 34) ageFactor = 0.35
+  else ageFactor = 0.15
 
-  // Reputation team aggiunge premium del 10-30% (top club tiene il giocatore "più caro"):
-  // per ora skip — entra in 3.D quando avremo contratto + clausola
+  const base = Math.pow(1.85, (overall - 50) / 5) * 1_200_000
 
-  const value = Math.round(Math.pow(overall, 3.2) * 1000 * factor)
+  const pot = player.potential ?? overall
+  let potBonus = 1
+  if (effAge <= 22) {
+    const gap = pot - overall
+    if (gap >= 10) potBonus = 1.5
+    else if (gap >= 5) potBonus = 1.25
+  }
+
+  // Floor €100k per giovani/scarsi (evita 0 e troppo bassi)
+  const raw = Math.max(100_000, base * ageFactor * potBonus)
+  // Arrotonda a 100k
+  const value = Math.round(raw / 100_000) * 100_000
   player.marketValue = value
   return value
+}
+
+/**
+ * Migra/ricalibra il marketValue di TUTTI i giocatori della career con la
+ * formula attuale. Idempotente. Utile come migration one-shot per save creati
+ * prima del fix calibrazione Serie A (Fase 3.G fix-values).
+ *
+ * Marker `career.marketValuesV2 = true` per saltare al secondo invoke.
+ * Refyear = season.year corrente (deterministic).
+ */
+export function ensureMarketValuesCalibrated(career: Career): void {
+  if (career.marketValuesV2) return
+  const refYear = career.season.year
+  for (const p of Object.values(career.players)) {
+    recalculateMarketValue(p, refYear)
+  }
+  // Le offerte pending nel save vecchio hanno importi assurdi rispetto ai nuovi MV.
+  // Marca come 'expired' così l'AI ne genererà di nuove sulla base dei prezzi corretti.
+  if (career.transferOffers) {
+    for (const o of career.transferOffers) {
+      if (o.status === 'pending') o.status = 'expired'
+    }
+  }
+  career.marketValuesV2 = true
+  career.updatedAt = Date.now()
 }
 
 // ====== Tick singolo giocatore ======

@@ -22,6 +22,7 @@ import { calcOverall } from '$engine/gen/player'
 import { initClubFinances, weeklyTick as financesWeeklyTick, applyMatchdayGate } from './finances'
 import { ensureAllPlayersContracts, refreshMyClubWageBudget } from './contracts'
 import { tickTransferOffers, tickAIToAITransfers } from './transfers'
+import { ensureMarketValuesCalibrated } from './aging'
 
 // ====== Formazioni standard ======
 
@@ -322,6 +323,9 @@ export function buildCareerFromPreview(preview: PreviewWorld, opts: Omit<CreateC
   // monte ingaggi del MIO club aggiornato dalla rosa reale.
   ensureAllPlayersContracts(career)
   refreshMyClubWageBudget(career)
+  // Fase 3.G fix-values: marca i marketValue come già calibrati (sono stati
+  // generati con la formula corretta in computeInitialMarketValue).
+  career.marketValuesV2 = true
   return career
 }
 

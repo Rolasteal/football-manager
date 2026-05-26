@@ -20,6 +20,7 @@
     type MyOfferOutcome,
   } from '$engine/career/transfers'
   import { calcOverall } from '$engine/gen/player'
+  import { ensureMarketValuesCalibrated } from '$engine/career/aging'
   import type { TransferOffer, CompletedTransfer, NewsItem } from '$engine/career/types'
   import type { Player, Position } from '$engine/types'
 
@@ -111,6 +112,9 @@
     }
     // Backfill per save legacy creati prima di Fase 3.G.1 (mutazione safe in onMount)
     ensureTransferState(career)
+    // Migrazione marketValue per save creati prima di Fase 3.G fix-values
+    // (formula vecchia dava OVR 92 = €2M. Recalcola tutti con calibrazione Serie A 2024).
+    ensureMarketValuesCalibrated(career)
   })
 
   function playerOfOffer(o: TransferOffer) {

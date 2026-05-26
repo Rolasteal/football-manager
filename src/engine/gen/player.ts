@@ -244,15 +244,10 @@ export function generatePlayer(rng: Rng, opts: GenPlayerOptions): Player {
   // Distribuzione età realistica (mediana ~25, peak 22-28)
   const ageRoll = clamp(Math.round(rng.gauss(25, 4.5)), 17, 37)
   const attrs = generateAttributes(rng, opts.position, opts.tier)
-  // Valore di mercato grezzo da overall e età (Fase 2: rivedere)
-  const overallProxy =
-    (attrs.passing + attrs.shooting + attrs.dribbling + attrs.finishing
-      + attrs.tackling + attrs.pace + attrs.stamina + attrs.vision
-      + attrs.composure + attrs.reflexes + attrs.handling) / 11
-  const ageFactor = opts.position === 'GK'
-    ? (ageRoll < 32 ? 1 : Math.max(0.3, 1 - (ageRoll - 32) * 0.15))
-    : (ageRoll < 29 ? 1 : Math.max(0.2, 1 - (ageRoll - 29) * 0.15))
-  const marketValue = Math.round(Math.pow(overallProxy, 3.2) * 1000 * ageFactor)
+  // marketValue iniziale: PLACEHOLDER. Il valore finale viene calcolato sotto
+  // dopo aver creato il Player, via recalculateMarketValue (formula unificata
+  // Serie A 2024 in `$engine/career/aging.ts`). Fase 3.G fix-values.
+  const marketValue = 0
 
   const foot: Foot = rng.chance(0.78) ? 'right' : rng.chance(0.85) ? 'left' : 'both'
 
@@ -292,5 +287,48 @@ export function generatePlayer(rng: Rng, opts: GenPlayerOptions): Player {
   else if (ageRoll <= 28) growthRoom = rng.int(0, 2)   // picco, quasi nulla
   else growthRoom = rng.int(-3, 0)                     // post-picco, potential = peak storico
   player.potential = clamp(currentOvr + growthRoom + (ageRoll >= 29 ? Math.round((ageRoll - 28) * 1.5) : 0), 30, 99)
+
+  // Fase 3.G fix-values: marketValue calibrato Serie A 2024 via formula unificata.
+  // Inline qui per evitare import circolare (aging.ts dipende da player.ts).
+  // Stessa formula di `recalculateMarketValue` in career/aging.ts.
+  player.marketValue = computeInitialMarketValue(player, opts.seasonYear)
   return player
+}
+
+/**
+ * Calcola il valore di mercato iniziale di un giocatore appena generato.
+ * Stessa formula di `recalculateMarketValue` in `$engine/career/aging.ts`,
+ * duplicata qui per evitare l'import circolare (aging.ts importa da player.ts).
+ *
+ * Vedi commento in `recalculateMarketValue` per il dettaglio della calibrazione.
+ */
+function computeInitialMarketValue(player: Player, refYear: number): number {
+  const overall = calcOverall(player)
+  const b = new Date(player.birthDate)
+  const ref = new Date(`${refYear}-07-01`)
+  let realAge = ref.getUTCFullYear() - b.getUTCFullYear()
+  const m = ref.getUTCMonth() - b.getUTCMonth()
+  if (m < 0 || (m === 0 && ref.getUTCDate() < b.getUTCDate())) realAge--
+  const effAge = player.position === 'GK' ? Math.max(16, realAge - 3) : realAge
+
+  let ageFactor: number
+  if (effAge <= 17) ageFactor = 0.45
+  else if (effAge <= 20) ageFactor = 0.65
+  else if (effAge <= 23) ageFactor = 0.90
+  else if (effAge <= 28) ageFactor = 1.00
+  else if (effAge <= 30) ageFactor = 0.85
+  else if (effAge <= 32) ageFactor = 0.60
+  else if (effAge <= 34) ageFactor = 0.35
+  else ageFactor = 0.15
+
+  const base = Math.pow(1.85, (overall - 50) / 5) * 1_200_000
+  const pot = player.potential ?? overall
+  let potBonus = 1
+  if (effAge <= 22) {
+    const gap = pot - overall
+    if (gap >= 10) potBonus = 1.5
+    else if (gap >= 5) potBonus = 1.25
+  }
+  const raw = Math.max(100_000, base * ageFactor * potBonus)
+  return Math.round(raw / 100_000) * 100_000
 }
