@@ -81,6 +81,61 @@ export interface NewsItem {
   read: boolean
 }
 
+// ====== Mercato (Fase 3.G) ======
+
+/**
+ * Stato di un'offerta di trasferimento. Gli stati finali (accepted/rejected/
+ * expired) restano nell'array per la history, finché non vengono potati
+ * dopo qualche giornata. Le 'pending' sono quelle attive.
+ */
+export type TransferOfferStatus = 'pending' | 'accepted' | 'rejected' | 'expired'
+
+/**
+ * Offerta di trasferimento tra due club per un singolo giocatore.
+ * In Fase 3.G.1 sono solo offerte AI → MIO club. In 3.G.2 si aggiungono le
+ * mie offerte verso AI e gli scambi AI↔AI di sottofondo.
+ */
+export interface TransferOffer {
+  id: EntityId
+  /** Team che fa l'offerta (compratore) */
+  fromTeamId: EntityId
+  /** Team che possiede il giocatore (venditore) */
+  toTeamId: EntityId
+  playerId: EntityId
+  /** Importo offerto in € */
+  amount: number
+  /** Matchday di creazione */
+  createdMd: number
+  /** Matchday entro cui va accettata/rifiutata (poi diventa 'expired') */
+  expiresMd: number
+  status: TransferOfferStatus
+}
+
+/**
+ * Trasferimento completato (finalizzato dopo accept). Salvato in history per
+ * UI/news/audit. La plusvalenza è calcolata vs `marketValue` al momento della
+ * cessione (semplificazione del bookValue contabile).
+ */
+export interface CompletedTransfer {
+  id: EntityId
+  matchday: number
+  date: string
+  playerId: EntityId
+  playerName: string
+  position: string
+  fromTeamId: EntityId
+  fromTeamName: string
+  toTeamId: EntityId
+  toTeamName: string
+  amount: number
+  /** amount - marketValue al momento della cessione */
+  profitLoss: number
+  /** Era una cessione del mio club? */
+  isMineSold: boolean
+  /** Era un acquisto del mio club? (Fase 3.G.2) */
+  isMineBought: boolean
+}
+
 /**
  * Container completo di una carriera salvata.
  * Tutto qui dentro viene serializzato e finisce in IndexedDB.
@@ -128,4 +183,17 @@ export interface Career {
    * inizializza al volo dalla `reputation` del team. Fase 3.1.
    */
   clubFinances?: ClubFinances
+
+  /**
+   * Offerte di trasferimento attive (pending) e recenti (max ~50 con stati
+   * finali, poi potate). Opzionale per backward-compat: se mancante
+   * `ensureTransferState()` in transfers.ts lo inizializza al volo. Fase 3.G.
+   */
+  transferOffers?: TransferOffer[]
+
+  /**
+   * Trasferimenti completati (max ultimi 30). Per UI history + audit
+   * plusvalenze. Opzionale per backward-compat (idem sopra).
+   */
+  transferHistory?: CompletedTransfer[]
 }
