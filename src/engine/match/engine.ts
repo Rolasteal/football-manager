@@ -506,9 +506,15 @@ export function simulateMatch(opts: SimulateMatchOptions): MatchResult {
     const defendingSide = attackingSide.side === 'home' ? awaySide : homeSide
 
     if (r < 0.30) {
+      // Filler — gioco fluido. Attribuiamo il "tocco" a un giocatore casuale
+      // del team che attacca così tutti i giocatori in campo (sub inclusi)
+      // ricevono qualche evento durante la partita e il loro rating live
+      // non resta congelato a 6.0.
+      const onPitch = attackingSide.players.filter(p => !sentOff.has(p.id))
+      const passer = onPitch[Math.floor(rng.next() * onPitch.length)]
       events.push({
         minute: min, second: rng.int(0, 59), kind: 'pass',
-        side: attackingSide.side,
+        side: attackingSide.side, playerId: passer?.id,
         ballPosition: ballAt(attackingSide.side, ZONE_MID, rng),
         commentary: tpl(rng, 'filler', { t: attackingSide.team.name }),
       })

@@ -154,14 +154,29 @@
     return n == null ? '—' : String(n)
   }
 
+  /** Hash deterministico stringa → float [0,1) — usato per jitter voti
+   *  dei sub IN che restano a 6.0 esatto (così non sono tutti uguali). */
+  function hashFloat(s: string): number {
+    let h = 0
+    for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0
+    return ((h % 1000) + 1000) % 1000 / 1000
+  }
+
   /**
    * Voto BASE prestazione 4.0-10.0 calcolato sugli eventi mostrati.
    * NON include gol/assist/cartellini/rigori — quelli sono fanta-bonus
    * separati (vedi computeFantaBonus) e vengono sommati per il voto
    * finale mostrato. Qui solo metriche di "pagella" tipo FM.
+   *
+   * Sub IN: chi entra negli ultimi minuti rischia di restare bloccato a
+   * 6.0 perché riceve pochi eventi. Per dargli un voto plausibile:
+   *  - 'pass' events ora hanno playerId (vedi engine) e contano +0.02
+   *  - se nonostante questo il sub IN resta a 6.0 esatto, applichiamo
+   *    un jitter deterministic ±0.3 sull'id così non sono tutti 6.0.
    */
   function computeLiveRatings(events: MatchEvent[]): Record<EntityId, number> {
     const r: Record<EntityId, number> = {}
+    const subIn = new Set<EntityId>()
     const adj = (id: EntityId | undefined, delta: number) => {
       if (!id) return
       if (r[id] === undefined) r[id] = 6.0
@@ -173,11 +188,23 @@
     for (const ev of events) {
       touch(ev.playerId)
       touch(ev.secondaryPlayerId)
+      if (ev.kind === 'substitution' && ev.secondaryPlayerId) {
+        subIn.add(ev.secondaryPlayerId)
+      }
       switch (ev.kind) {
         case 'shot_on_target': adj(ev.playerId, +0.1); break
         case 'save':           adj(ev.playerId, +0.3); break
         case 'shot':           adj(ev.playerId, -0.05); break
         case 'foul':           adj(ev.playerId, -0.05); break
+        case 'pass':           adj(ev.playerId, +0.02); break
+      }
+    }
+    // Post-pass jitter sui sub IN ancora a 6.0 esatto: voti differenziati
+    // (5.7-6.3) basati su hash deterministic dell'id — stabili tra reload.
+    for (const id of subIn) {
+      if (r[id] === undefined || r[id] === 6.0) {
+        const bias = (hashFloat(id) - 0.5) * 0.6  // [-0.3, +0.3]
+        r[id] = Math.max(4, Math.min(10, 6.0 + Math.round(bias * 10) / 10))
       }
     }
     return r
