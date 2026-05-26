@@ -9,7 +9,10 @@
     "build": "vite build",
     "preview": "vite preview",
     "check": "svelte-check --tsconfig ./tsconfig.app.json && tsc -p tsconfig.node.json",
-    "typecheck": "svelte-check --tsconfig ./tsconfig.app.json --threshold error"
+    "typecheck": "svelte-check --tsconfig ./tsconfig.app.json --threshold error",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:ui": "vitest --ui"
   },
   "optionalDependencies": {
     "@rolldown/binding-win32-x64-msvc": "^1.0.2"
@@ -19,11 +22,13 @@
     "@tailwindcss/vite": "^4.3.0",
     "@tsconfig/svelte": "^5.0.8",
     "@types/node": "^24.12.3",
+    "@vitest/ui": "^4.1.7",
     "svelte": "^5.55.5",
     "svelte-check": "^4.4.8",
     "tailwindcss": "^4.3.0",
     "typescript": "~6.0.2",
-    "vite": "^8.0.12"
+    "vite": "^8.0.12",
+    "vitest": "^4.1.7"
   },
   "dependencies": {
     "@lucide/svelte": "^1.16.0",

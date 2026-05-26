@@ -9,6 +9,7 @@ import Match from '$routes/Match.svelte'
 import MatchReport from '$routes/MatchReport.svelte'
 import PlayerDetail from '$routes/PlayerDetail.svelte'
 import Settings from '$routes/Settings.svelte'
+import BettingDemo from '$routes/BettingDemo.svelte'
 import NotFound from '$routes/NotFound.svelte'
 
 export const routes: RouteDefinition = {
@@ -22,6 +23,7 @@ export const routes: RouteDefinition = {
   '/match-report/:fixtureId': MatchReport,
   '/player/:id': PlayerDetail,
   '/settings':   Settings,
+  '/betting-demo': BettingDemo,
   // Fallback 404
   '*': NotFound,
 }

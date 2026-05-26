@@ -6,6 +6,7 @@
 import type { EntityId, Team, Player, Stadium, League, Season } from '$engine/types'
 import type { Fixture } from '$engine/competition/types'
 import type { Tactics, Lineup } from '$engine/tactics/types'
+import type { BettingCareerData } from '$engine/betting/types'
 
 export interface Manager {
   id: EntityId
@@ -70,4 +71,11 @@ export interface Career {
 
   /** Feed news (max ~50, vecchie auto-purged) */
   news: NewsItem[]
+
+  /**
+   * Dati del modulo scommesse sportive. Opzionale per backward-compat con save legacy:
+   * se mancante, ensureBettingData() in $engine/betting/orchestrator lo inizializza al volo.
+   * Vedi docs/specs/betting/BETTING_SPEC.md.
+   */
+  bettingCareerData?: BettingCareerData
 }

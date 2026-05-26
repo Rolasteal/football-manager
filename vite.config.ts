@@ -24,6 +24,13 @@ export default defineConfig({
   server: {
     host: true,
     port: 5173,
+    // Polling per file watching: necessario su drive di rete / OneDrive sync / dischi esterni
+    // dove il watcher nativo di Node.js fallisce con UV_UNKNOWN errno -4094.
+    // Più lento del watch nativo (~1s di latenza) ma stabile ovunque.
+    watch: {
+      usePolling: true,
+      interval: 1000,
+    },
   },
   build: {
     target: 'es2022',
