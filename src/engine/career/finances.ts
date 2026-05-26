@@ -18,8 +18,9 @@
  * direttamente `team.balance` con tick semplificato basato su reputation.
  */
 
-import type { Team } from '$engine/types'
+import type { Team, Stadium, League } from '$engine/types'
 import type { Career, ClubFinances, FinanceEntry } from './types'
+import { computeStandings } from '$engine/competition/standings'
 
 /** Numero massimo di voci di history conservate (memory cap + dashboard trend) */
 const HISTORY_CAP = 30
@@ -164,6 +165,149 @@ export function weeklyTick(career: Career, matchday: number): void {
     const jitter = 0.85 + Math.random() * 0.3 // ±15%
     const delta = Math.round(baseDelta * jitter)
     t.balance = Math.max(0, t.balance + delta)
+  }
+}
+
+// ====== Gate revenue / Stadio (Fase 3.2) ======
+
+/**
+ * Calcola occupazione stadio 0..1 per un match di casa.
+ *
+ * Componenti:
+ * - **base** dalla reputation del team di casa: rep 30 = 55%, rep 50 = 75%,
+ *   rep 70 = 95%, rep 90 = 100% (curva linear con clamp).
+ * - **boost forma** sugli ultimi 3 match: ogni W = +3%, ogni L = -3%, D neutro.
+ *   Una serie di vittorie riempie lo stadio, una serie di sconfitte lo svuota.
+ * - **boost importanza** se siamo nelle ultime 5 giornate della stagione
+ *   (corsa al titolo / lotta salvezza): +5%.
+ * - **jitter** deterministic dal seed + matchday + teamId: ±4% per non avere
+ *   numeri identici settimana dopo settimana.
+ *
+ * Clamp finale 0.45-1.00 (sotto 45% non si scende mai, mantiene incassi minimi).
+ */
+export function computeOccupancy(
+  homeTeam: Team,
+  recentForm: ('W' | 'D' | 'L')[],
+  currentMatchday: number,
+  totalMatchdays: number,
+  jitterSeed: number
+): number {
+  // Base su reputation: rep 30 → 0.55, rep 70 → 0.95
+  const r = Math.max(1, Math.min(100, homeTeam.reputation))
+  let occ = 0.40 + r * 0.0075
+
+  // Boost forma ultimi 3
+  const last3 = recentForm.slice(0, 3)
+  for (const f of last3) {
+    if (f === 'W') occ += 0.03
+    else if (f === 'L') occ -= 0.03
+  }
+
+  // Boost ultime 5 giornate (run-in finale)
+  if (currentMatchday >= totalMatchdays - 4) {
+    occ += 0.05
+  }
+
+  // Jitter deterministic ±0.04
+  const j = ((jitterSeed * 2654435761) >>> 0) / 0xFFFFFFFF
+  occ += (j - 0.5) * 0.08
+
+  return Math.max(0.45, Math.min(1.0, occ))
+}
+
+/**
+ * Prezzo medio biglietto in € per uno stadio. Dipende da:
+ * - tier lega (1 = top, 2 = lower) → base price
+ * - reputation team di casa → premium top club
+ *
+ * Range realistico: €10 (piccola Serie B) → €55 (top Serie A).
+ */
+export function avgTicketPrice(homeTeam: Team, leagueTier: number): number {
+  const basePrice = leagueTier === 1 ? 18 : 10
+  const repPremium = Math.max(0, homeTeam.reputation - 30) * 0.45
+  return Math.round(basePrice + repPremium)
+}
+
+/**
+ * Incasso gate di un singolo match di casa.
+ * gate = capacity * occupancy * avgTicketPrice.
+ *
+ * NB: occupancy include già il boost forma/importanza/jitter — qui solo math.
+ */
+export function computeGateRevenue(
+  stadium: Stadium,
+  occupancy: number,
+  ticketPrice: number
+): number {
+  return Math.round(stadium.capacity * occupancy * ticketPrice)
+}
+
+/**
+ * Applica l'incasso gate di tutti i match della giornata corrente.
+ * Va chiamato in `advanceMatchday` PRIMA della simulazione delle partite,
+ * così la `recentForm` letta da computeStandings non include il risultato
+ * della partita stessa (tifosi comprano il biglietto in anticipo).
+ *
+ * Per il mio club: aggiunge a `clubFinances.cash` + log "Gate vs X" in history.
+ * Per le AI: aggiunge direttamente a `team.balance`.
+ */
+export function applyMatchdayGate(career: Career, matchday: number): void {
+  const myTeamId = career.club.teamId
+  const finances = ensureClubFinances(career)
+
+  // Pre-calcola le classifiche di ogni lega 1 volta sola (form lookup veloce)
+  const formByTeam = new Map<string, ('W' | 'D' | 'L')[]>()
+  for (const league of Object.values(career.leagues)) {
+    const leagueFixtures = career.fixtures.filter(f => f.leagueId === league.id)
+    const standings = computeStandings(leagueFixtures, league.teamIds)
+    for (const row of standings) {
+      formByTeam.set(row.teamId, row.form)
+    }
+  }
+
+  // Helper per trovare la lega di un team
+  function leagueOfTeam(teamId: string): League | undefined {
+    return Object.values(career.leagues).find(l => l.teamIds.includes(teamId))
+  }
+
+  // Itera i match della giornata corrente (solo non ancora giocati)
+  for (const f of career.fixtures) {
+    if (f.matchday !== matchday) continue
+    if (f.status === 'played') continue
+
+    const homeTeam = career.teams[f.homeId]
+    const awayTeam = career.teams[f.awayId]
+    if (!homeTeam || !awayTeam) continue
+
+    const stadium = career.stadiums[homeTeam.stadiumId]
+    if (!stadium) continue
+
+    const league = leagueOfTeam(homeTeam.id)
+    const tier = league?.tier ?? 1
+    const totalMd = career.season.totalMatchdays
+
+    const form = formByTeam.get(homeTeam.id) ?? []
+    // Jitter seed deterministic dal career seed + md + team
+    const jitterSeed = (career.seed ^ matchday ^ homeTeam.id.charCodeAt(0)) >>> 0
+    const occupancy = computeOccupancy(homeTeam, form, matchday, totalMd, jitterSeed)
+    const ticket = avgTicketPrice(homeTeam, tier)
+    const gate = computeGateRevenue(stadium, occupancy, ticket)
+
+    if (homeTeam.id === myTeamId) {
+      finances.cash += gate
+      finances.history.unshift({
+        matchday,
+        label: `Gate vs ${awayTeam.shortName}`,
+        amount: gate,
+        balanceAfter: finances.cash,
+      })
+      if (finances.history.length > HISTORY_CAP) {
+        finances.history.length = HISTORY_CAP
+      }
+      homeTeam.balance = finances.cash
+    } else {
+      homeTeam.balance += gate
+    }
   }
 }
 

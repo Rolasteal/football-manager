@@ -19,7 +19,7 @@ import { createWorld } from '$engine/gen/world'
 import { buildAllSchedules } from '$engine/gen/schedule'
 import { simulateMatch } from '$engine/match/engine'
 import { calcOverall } from '$engine/gen/player'
-import { initClubFinances, weeklyTick as financesWeeklyTick } from './finances'
+import { initClubFinances, weeklyTick as financesWeeklyTick, applyMatchdayGate } from './finances'
 
 // ====== Formazioni standard ======
 
@@ -351,6 +351,11 @@ export function advanceMatchday(career: Career): AdvanceMatchdayResult {
   const myFixture = career.fixtures.find(f =>
     f.matchday === md && (f.homeId === career.club.teamId || f.awayId === career.club.teamId)
   ) ?? null
+
+  // Fase 3.2: incasso gate dei match di casa, PRIMA delle simulazioni.
+  // Così la `recentForm` letta da computeStandings non include il risultato
+  // della partita corrente (tifosi comprano il biglietto in anticipo).
+  applyMatchdayGate(career, md)
 
   let count = 0
   for (const f of career.fixtures) {
