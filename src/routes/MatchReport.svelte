@@ -28,7 +28,7 @@
   let events = $derived(result?.events ?? [])
 
   // Derivati dalle pure functions del modulo (riusano la stessa logica di Match.svelte)
-  let liveRatings = $derived(MA.computeLiveRatings(events))
+  let liveRatings = $derived(MA.computeLiveRatings(events, homeLineup, awayLineup))
   let badges = $derived(MA.computePlayerBadges(events))
   let liveStats = $derived(MA.computeLiveStats(events))
   let homeGkId = $derived(homeLineup && career ? MA.gkOfLineup(homeLineup, career.players) : undefined)

@@ -67,14 +67,35 @@
     }
     return a
   }
-  function playAudio(path: string, volume = 0.7) {
-    if (muted) return
+  function playAudio(path: string, volume = 0.7): HTMLAudioElement | null {
+    if (muted) return null
     try {
       const a = getAudio(path)
       a.volume = Math.max(0, Math.min(1, volume))
       a.currentTime = 0
       a.play().catch(() => {})
-    } catch {}
+      return a
+    } catch { return null }
+  }
+  /** Riferimento all'audio "lungo" attualmente in play associato a un overlay
+   *  (es. boato gol, applausi finali). Fade-out automatico quando l'overlay
+   *  sta per chiudersi, per sincronizzare audio e visual. */
+  let activeOverlayAudio: HTMLAudioElement | null = null
+  function fadeOutAudio(a: HTMLAudioElement | null, durMs = AUDIO_FADE_MS) {
+    if (!a || a.paused) return
+    const startVol = a.volume
+    const start = performance.now()
+    const step = () => {
+      if (!a) return
+      const t = Math.min(1, (performance.now() - start) / durMs)
+      a.volume = Math.max(0, startVol * (1 - t))
+      if (t >= 1) {
+        try { a.pause(); a.currentTime = 0; a.volume = startVol } catch {}
+        return
+      }
+      requestAnimationFrame(step)
+    }
+    requestAnimationFrame(step)
   }
   /** Triplice fischio finale (fischio.mp3 ripetuto a 280ms di distanza). */
   function playWhistleTriple(volume = 0.8) {
@@ -124,14 +145,14 @@
         break
       case 'full_time':
         playWhistleTriple(0.85)
-        // dopo i 3 fischi, applausi
-        setTimeout(() => playAudio('/assets/audio/applausi.mp3', 0.55), 1200)
+        // dopo i 3 fischi, applausi (traccia lunga → tracciamo per fade-out)
+        setTimeout(() => { activeOverlayAudio = playAudio('/assets/audio/applausi.mp3', 0.55) }, 1200)
         break
       case 'goal':
-        playAudio('/assets/audio/tifosi3.mp3', 0.8)
+        activeOverlayAudio = playAudio('/assets/audio/tifosi3.mp3', 0.8)
         break
       case 'own_goal':
-        playAudio('/assets/audio/tifosi3.mp3', 0.55)  // più smorzato (amaro)
+        activeOverlayAudio = playAudio('/assets/audio/tifosi3.mp3', 0.55)
         break
       case 'yellow_card':
         playAudio('/assets/audio/tifosi4.mp3', 0.7)
@@ -215,10 +236,11 @@
     return Math.max(80, baseMs / speed)
   }
 
-  // Durata overlay drammatici (NEUTRA rispetto a speed: la "pausa narrativa" è fissa)
+  // Durata overlay drammatici (NEUTRA rispetto a speed: la "pausa narrativa" è fissa).
+  // V2.1: goal/own_goal allungati per sincronizzarsi col boato (tifosi3.mp3 dura ~6s).
   const OVERLAY_MS: Record<OverlayKind, number> = {
-    goal: 4200,
-    own_goal: 4000,
+    goal: 6500,
+    own_goal: 5500,
     yellow: 2200,
     red: 3000,
     half_time: 5000,
@@ -230,6 +252,8 @@
     mvp: 6500,
     pagelle: 3500,
   }
+  /** Durata fade-out audio quando un overlay sta per chiudersi (ms). */
+  const AUDIO_FADE_MS = 600
 
   // Pre-evento "suspense": qualcosa sta per accadere
   type SuspenseKind = 'goal' | 'yellow' | 'red' | 'penalty'
@@ -299,42 +323,77 @@
   function computeLiveRatings(events: MatchEvent[]): Record<EntityId, number> {
     const r: Record<EntityId, number> = {}
     const subIn = new Set<EntityId>()
-    // V2 voti (vedi memoria [[project-voti-fantacalcio]]): voto base 5.5
-    // (era 6.0) — un giocatore "anonimo" senza eventi ha 5.5 stile pagella
-    // fantacalcio reale (non sufficienza piena finché non fa qualcosa).
+    // V2.1 voti (vedi memoria [[project-voti-fantacalcio]]): voto base 5.5
+    // generoso stile pagelle giornali sportivi — gol/assist/save alzano il
+    // voto in tempo reale durante il match, team modifier in base al risultato
+    // corrente, autogol penalizza il difensore.
     const BASE = 5.5
+    const clampV = (v: number) => Math.max(4, Math.min(10, v))
     const adj = (id: EntityId | undefined, delta: number) => {
       if (!id) return
       if (r[id] === undefined) r[id] = BASE
-      r[id] = Math.max(4, Math.min(10, r[id] + delta))
+      r[id] = clampV(r[id] + delta)
     }
     const touch = (id: EntityId | undefined) => {
       if (id && r[id] === undefined) r[id] = BASE
     }
+    let homeGoals = 0
+    let awayGoals = 0
     for (const ev of events) {
       touch(ev.playerId)
       touch(ev.secondaryPlayerId)
       if (ev.kind === 'substitution' && ev.secondaryPlayerId) {
         subIn.add(ev.secondaryPlayerId)
       }
+      if (ev.kind === 'goal' || ev.kind === 'own_goal') {
+        // ev.side = team che SEGNA (engine inverte per own_goal)
+        if (ev.side === 'home') homeGoals++
+        if (ev.side === 'away') awayGoals++
+      }
       switch (ev.kind) {
-        case 'shot_on_target': adj(ev.playerId, +0.1); break
+        case 'goal':
+          // Marcatore +1.0, assistman +0.6 (se presente in secondaryPlayerId)
+          adj(ev.playerId, +1.0)
+          if (ev.secondaryPlayerId) adj(ev.secondaryPlayerId, +0.6)
+          break
+        case 'own_goal':
+          // Autogol: difensore prende -1.5 al voto base (oltre al -3 fanta-bonus)
+          adj(ev.playerId, -1.5)
+          break
+        case 'shot_on_target': adj(ev.playerId, +0.15); break
         case 'save':           adj(ev.playerId, +0.3); break
-        case 'shot':           adj(ev.playerId, -0.05); break
+        case 'shot':           adj(ev.playerId, -0.03); break
         case 'foul':           adj(ev.playerId, -0.05); break
         case 'pass':           adj(ev.playerId, +0.02); break
       }
     }
-    // Jitter sui sub IN ancora alla base esatta: voti differenziati 5.0-6.0
-    // (bias ±0.5) basati su hash deterministic dell'id — stabili tra reload.
+    // Jitter sui sub IN ancora alla base esatta
     for (const id of subIn) {
       if (r[id] === undefined || r[id] === BASE) {
-        const bias = (hashFloat(id) - 0.5) * 1.0  // [-0.5, +0.5]
-        r[id] = Math.max(4, Math.min(10, BASE + Math.round(bias * 10) / 10))
+        const bias = (hashFloat(id) - 0.5) * 1.0
+        r[id] = clampV(BASE + Math.round(bias * 10) / 10)
       }
+    }
+    // V2.1: Team modifier — squadra che vince è più "generosa" nelle pagelle,
+    // perdente più severa. ±0.15 per ogni gol di differenza, max ±0.30.
+    if (homeGoals !== awayGoals && (homeLineup || awayLineup)) {
+      const diff = homeGoals - awayGoals
+      const homeMod = clampMod(0.15 * diff)
+      const awayMod = -homeMod
+      const applyMod = (lineup: Lineup | null, mod: number) => {
+        if (!lineup || mod === 0) return
+        const all = [...lineup.starters, ...lineup.bench]
+        for (const id of all) {
+          if (r[id] !== undefined) r[id] = clampV(r[id] + mod)
+        }
+      }
+      applyMod(homeLineup, homeMod)
+      applyMod(awayLineup, awayMod)
     }
     return r
   }
+  /** Limita il team modifier in [-0.30, +0.30]. */
+  function clampMod(v: number): number { return Math.max(-0.30, Math.min(0.30, v)) }
 
   let liveRatings = $derived(computeLiveRatings(shown))
 
@@ -701,6 +760,17 @@
     overlay = payload
     stopClockAnim()
     const ms = OVERLAY_MS[payload.kind]
+    // Fade-out audio "lungo" (boato/applausi) negli ultimi AUDIO_FADE_MS,
+    // così audio e overlay finiscono insieme senza tagli bruschi.
+    const fadeAt = Math.max(0, ms - AUDIO_FADE_MS)
+    const hasLongAudio = payload.kind === 'goal' || payload.kind === 'own_goal' || payload.kind === 'full_time'
+    if (hasLongAudio && !muted) {
+      setTimeout(() => {
+        const a = activeOverlayAudio
+        activeOverlayAudio = null
+        fadeOutAudio(a)
+      }, fadeAt)
+    }
     overlayTimer = setTimeout(() => {
       overlay = null
       overlayTimer = null

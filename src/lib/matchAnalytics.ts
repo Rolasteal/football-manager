@@ -104,30 +104,49 @@ export function hashFloat(s: string): number {
 // COMPUTE FUNCTIONS — pure su MatchEvent[]
 // ====================================================================
 
-/** Voto BASE prestazione 4.0-10.0 V2 calcolato sugli eventi. Default 5.5
- *  (anonimo). Sub IN che restano alla base esatta ricevono un jitter
- *  deterministic ±0.5 sull'id così non sono tutti uguali. */
-export function computeLiveRatings(events: MatchEvent[]): Record<EntityId, number> {
+/** Voto BASE prestazione 4.0-10.0 V2.1 — generoso stile pagelle giornali.
+ *  Gol/assist/save alzano il voto in real-time; autogol penalizza; team
+ *  modifier ±0.30 basato sulla differenza reti corrente quando lineups passate.
+ *  Sub IN che restano alla base esatta ricevono jitter deterministic ±0.5. */
+export function computeLiveRatings(
+  events: MatchEvent[],
+  homeLineup?: Lineup | null,
+  awayLineup?: Lineup | null,
+): Record<EntityId, number> {
   const r: Record<EntityId, number> = {}
   const subIn = new Set<EntityId>()
+  const clampV = (v: number) => Math.max(4, Math.min(10, v))
   const adj = (id: EntityId | undefined, delta: number) => {
     if (!id) return
     if (r[id] === undefined) r[id] = BASE_RATING
-    r[id] = Math.max(4, Math.min(10, r[id] + delta))
+    r[id] = clampV(r[id] + delta)
   }
   const touch = (id: EntityId | undefined) => {
     if (id && r[id] === undefined) r[id] = BASE_RATING
   }
+  let homeGoals = 0
+  let awayGoals = 0
   for (const ev of events) {
     touch(ev.playerId)
     touch(ev.secondaryPlayerId)
     if (ev.kind === 'substitution' && ev.secondaryPlayerId) {
       subIn.add(ev.secondaryPlayerId)
     }
+    if (ev.kind === 'goal' || ev.kind === 'own_goal') {
+      if (ev.side === 'home') homeGoals++
+      if (ev.side === 'away') awayGoals++
+    }
     switch (ev.kind) {
-      case 'shot_on_target': adj(ev.playerId, +0.1); break
+      case 'goal':
+        adj(ev.playerId, +1.0)
+        if (ev.secondaryPlayerId) adj(ev.secondaryPlayerId, +0.6)
+        break
+      case 'own_goal':
+        adj(ev.playerId, -1.5)
+        break
+      case 'shot_on_target': adj(ev.playerId, +0.15); break
       case 'save':           adj(ev.playerId, +0.3); break
-      case 'shot':           adj(ev.playerId, -0.05); break
+      case 'shot':           adj(ev.playerId, -0.03); break
       case 'foul':           adj(ev.playerId, -0.05); break
       case 'pass':           adj(ev.playerId, +0.02); break
     }
@@ -135,8 +154,24 @@ export function computeLiveRatings(events: MatchEvent[]): Record<EntityId, numbe
   for (const id of subIn) {
     if (r[id] === undefined || r[id] === BASE_RATING) {
       const bias = (hashFloat(id) - 0.5) * 1.0
-      r[id] = Math.max(4, Math.min(10, BASE_RATING + Math.round(bias * 10) / 10))
+      r[id] = clampV(BASE_RATING + Math.round(bias * 10) / 10)
     }
+  }
+  // V2.1: Team modifier (squadra vincente generosa, perdente severa)
+  if (homeGoals !== awayGoals && (homeLineup || awayLineup)) {
+    const diff = homeGoals - awayGoals
+    const cap = (v: number) => Math.max(-0.30, Math.min(0.30, v))
+    const homeMod = cap(0.15 * diff)
+    const awayMod = -homeMod
+    const applyMod = (lineup: Lineup | null | undefined, mod: number) => {
+      if (!lineup || mod === 0) return
+      const all = [...lineup.starters, ...lineup.bench]
+      for (const id of all) {
+        if (r[id] !== undefined) r[id] = clampV(r[id] + mod)
+      }
+    }
+    applyMod(homeLineup, homeMod)
+    applyMod(awayLineup, awayMod)
   }
   return r
 }
