@@ -121,6 +121,30 @@ export interface Player {
    * margine di crescita ai giovani.
    */
   potential?: number
+
+  /**
+   * Contratto col club attuale (Fase 3.D). Opzionale per backward-compat con
+   * save legacy: se mancante, `ensurePlayerContract` lo inizializza al volo
+   * (durata 1-5 anni, stipendio calibrato su overall+team rep).
+   * Null se svincolato (teamId null).
+   */
+  contract?: PlayerContract
+}
+
+/**
+ * Contratto giocatore-club. Stipendio settimanale + finestra temporale.
+ * Fase 3.D foundation; le scadenze effettive (svincolo, rinnovi) entrano in
+ * Fase 3.G (mercato).
+ */
+export interface PlayerContract {
+  /** Anno di inizio contratto (stagione X = es. 2026) */
+  startYear: number
+  /** Anno di scadenza contratto (fine giugno endYear) */
+  endYear: number
+  /** Stipendio settimanale in € */
+  weeklyWage: number
+  /** Bonus alla firma in € (per rinnovi futuri) */
+  signingBonus?: number
 }
 
 export interface Team {

@@ -5,6 +5,8 @@
   import { careerStore } from '$state/career.svelte'
   import { calcOverall } from '$engine/gen/player'
   import { ensurePlayerFMAttributes } from '$engine/gen/playerCompat'
+  import { ensurePlayerContract } from '$engine/career/contracts'
+  import { fmtMoney } from '$engine/career/finances'
   import type { Player, Position, PlayerAttributes } from '$engine/types'
 
   interface Props { params?: { id?: string } }
@@ -17,11 +19,14 @@
   )
   let team = $derived(player && player.teamId && career ? career.teams[player.teamId] : null)
 
-  // Backward-compat lazy: popola attributi FM mancanti su save legacy.
-  // Idempotente, side-effect su player.attributes (chiamato in $effect per non
-  // mutare durante il rendering del template).
+  // Backward-compat lazy: popola attributi FM e contratto mancanti su save legacy.
+  // Idempotente, side-effect su player (chiamato in $effect per non mutare
+  // durante il rendering del template).
   $effect(() => {
-    if (player) ensurePlayerFMAttributes(player)
+    if (player) {
+      ensurePlayerFMAttributes(player)
+      if (career && team) ensurePlayerContract(player, team, career.season.year, career.seed)
+    }
   })
 
   onMount(() => { if (!career) push('/') })
@@ -238,6 +243,38 @@
         </div>
       {/each}
     </section>
+
+    {#if player.contract}
+      {@const yearsLeft = player.contract.endYear - (career?.season.year ?? 0)}
+      <section class="card-gold contract-card anim-kickin">
+        <h3 class="attr-h">Contratto</h3>
+        <div class="contract-grid">
+          <div class="contract-cell">
+            <span class="contract-l">Scadenza</span>
+            <span class="contract-v">Giugno {player.contract.endYear}</span>
+            <span class="contract-sub" class:warn={yearsLeft <= 1} class:expire={yearsLeft <= 0}>
+              {#if yearsLeft <= 0}
+                In scadenza
+              {:else if yearsLeft === 1}
+                Ultima stagione
+              {:else}
+                {yearsLeft} anni rimanenti
+              {/if}
+            </span>
+          </div>
+          <div class="contract-cell">
+            <span class="contract-l">Stipendio</span>
+            <span class="contract-v text-gold">{fmtMoney(player.contract.weeklyWage)}/sett</span>
+            <span class="contract-sub">{fmtMoney(player.contract.weeklyWage * 52)}/anno</span>
+          </div>
+          <div class="contract-cell">
+            <span class="contract-l">Firmato</span>
+            <span class="contract-v">{player.contract.startYear}</span>
+            <span class="contract-sub">{player.contract.endYear - player.contract.startYear} anni totali</span>
+          </div>
+        </div>
+      </section>
+    {/if}
 
     {#if player.secondaryPositions && player.secondaryPositions.length > 0}
       <section class="card-gold sec-pos anim-kickin">
@@ -509,6 +546,46 @@
   .bar-fill.a-mid  { background: linear-gradient(90deg, #64748b, #cbd5e1); }
   .bar-fill.a-low  { background: linear-gradient(90deg, #c2410c, #fdba74); }
   .bar-fill.a-bad  { background: linear-gradient(90deg, #7f1d1d, #fca5a5); }
+
+  /* ===== Contratto (Fase 3.D) ===== */
+  .contract-card {
+    padding: 16px 22px;
+    margin-bottom: 18px;
+  }
+  .contract-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 14px 28px;
+  }
+  .contract-cell {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+  .contract-l {
+    color: #a8a29e;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    font-weight: 700;
+  }
+  .contract-v {
+    color: #fef3c7;
+    font-weight: 800;
+    font-size: 17px;
+    font-variant-numeric: tabular-nums;
+    line-height: 1.1;
+  }
+  .contract-sub {
+    color: #918778;
+    font-size: 11px;
+    margin-top: 1px;
+  }
+  .contract-sub.warn { color: #fdba74; }
+  .contract-sub.expire { color: #fca5a5; font-weight: 700; }
+  @media (max-width: 700px) {
+    .contract-grid { grid-template-columns: 1fr 1fr; }
+  }
 
   /* ===== Ruoli alternativi ===== */
   .sec-pos { padding: 16px 22px; margin-bottom: 18px; }

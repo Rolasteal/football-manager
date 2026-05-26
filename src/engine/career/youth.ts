@@ -24,6 +24,7 @@ import type { Rng } from '$engine/gen/rng'
 import type { Career } from './types'
 import { generatePlayer, type TeamTier } from '$engine/gen/player'
 import { ensurePlayerFMAttributes } from '$engine/gen/playerCompat'
+import { initContract } from './contracts'
 
 // ====== Distribuzione potential ======
 
@@ -123,7 +124,7 @@ function pickYouthPosition(rng: Rng): Position {
 export function generateYouthPlayer(
   rng: Rng,
   opts: {
-    teamId: string
+    team: Team
     position?: Position
     seasonYear: number
   }
@@ -136,7 +137,7 @@ export function generateYouthPlayer(
   const player = generatePlayer(rng, {
     position,
     tier,
-    teamId: opts.teamId,
+    teamId: opts.team.id,
     seasonYear: opts.seasonYear,
   })
 
@@ -155,8 +156,12 @@ export function generateYouthPlayer(
   ensurePlayerFMAttributes(player)
 
   // Numero maglia: i giovani prendono numeri alti (24-99) per non collidere
-  // con la rosa principale. Sarà rivisto in 3.D quando ci saranno contratti.
+  // con la rosa principale.
   player.shirtNumber = rng.int(24, 99)
+
+  // Fase 3.D: contratto giovane fresco (4-5 anni, stipendio basso). fullLength
+  // perché è appena promosso, non ha "anni consumati".
+  player.contract = initContract(player, opts.team, opts.seasonYear, rng, { fullLength: true })
 
   return player
 }
@@ -194,7 +199,7 @@ export function generateYouthPoolForSeason(career: Career, rng: Rng): YouthIntak
     const count = youthCountForTeam(team, rng)
     for (let i = 0; i < count; i++) {
       const youth = generateYouthPlayer(rng, {
-        teamId: team.id,
+        team,
         seasonYear: career.season.year,
       })
       career.players[youth.id] = youth

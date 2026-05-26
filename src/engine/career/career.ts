@@ -20,6 +20,7 @@ import { buildAllSchedules } from '$engine/gen/schedule'
 import { simulateMatch } from '$engine/match/engine'
 import { calcOverall } from '$engine/gen/player'
 import { initClubFinances, weeklyTick as financesWeeklyTick, applyMatchdayGate } from './finances'
+import { ensureAllPlayersContracts, refreshMyClubWageBudget } from './contracts'
 
 // ====== Formazioni standard ======
 
@@ -311,6 +312,10 @@ export function buildCareerFromPreview(preview: PreviewWorld, opts: Omit<CreateC
     // Fase 3.1: finanze club ricche per il mio club
     clubFinances: initClubFinances(myTeam),
   }
+  // Fase 3.D: contratti iniziali per tutta la rosa di tutti i club +
+  // monte ingaggi del MIO club aggiornato dalla rosa reale.
+  ensureAllPlayersContracts(career)
+  refreshMyClubWageBudget(career)
   return career
 }
 

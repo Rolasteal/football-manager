@@ -16,6 +16,7 @@ import { createRng, generateId } from '$engine/gen/rng'
 import { endOfSeasonAgeTick } from './aging'
 import { generateYouthPoolForSeason, type YouthIntakeReport } from './youth'
 import { buildAllSchedules } from '$engine/gen/schedule'
+import { refreshMyClubWageBudget, applyContractEndOfSeason } from './contracts'
 
 export interface NewSeasonReport {
   previousYear: number
@@ -55,11 +56,19 @@ export function startNewSeason(career: Career): NewSeasonReport | null {
   const playersAged = endOfSeasonAgeTick(career)
   const newYear = career.season.year  // ora è previousYear + 1
 
-  // 2) Pool giovani — rng deterministic separato per non collidere con aging
+  // 2) Contratti scadenze (Fase 3.D: no-op; Fase 3.G implementerà rinnovi/svincoli)
+  applyContractEndOfSeason(career)
+
+  // 3) Pool giovani — rng deterministic separato. I giovani vengono creati con
+  //    contratto fresco 4-5 anni (dentro generateYouthPlayer).
   const rngYouth = createRng((career.seed ^ newYear ^ 0xC014ED) >>> 0)
   const youth = generateYouthPoolForSeason(career, rngYouth)
 
-  // 3) Calendario nuova stagione — rng deterministic separato
+  // 4) Aggiorna monte ingaggi del mio club con la rosa reale aggiornata
+  //    (giovani aggiunti + eventuali svincolati rimossi in futuro)
+  refreshMyClubWageBudget(career)
+
+  // 5) Calendario nuova stagione — rng deterministic separato
   const rngFixtures = createRng((career.seed ^ newYear ^ 0xCA1E_DA21) >>> 0)
   const fixturesGenerated = buildNewSeasonFixtures(career, rngFixtures)
 
