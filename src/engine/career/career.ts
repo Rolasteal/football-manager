@@ -155,8 +155,37 @@ export function autoLineup(formation: Formation, squad: Player[]): Lineup {
     }
   }
 
-  // Bench: i 7 successivi non usati, ordinati per overall
-  const bench = sortedByOv.filter(p => !used.has(p.id)).slice(0, 7).map(p => p.id)
+  // Bench: 7 giocatori distribuiti per ruolo come da spec Roberto —
+  // 1 GK + 2 DEF + 2 MID + 2 ATT. All'interno di ogni gruppo si pesca
+  // per overall desc. Se un gruppo non ha abbastanza giocatori liberi,
+  // si riempie con i migliori rimasti (qualsiasi ruolo) come fallback
+  // così la panchina ha sempre 7 elementi.
+  const BENCH_QUOTA: Array<{ group: 'GK' | 'DEF' | 'MID' | 'ATT'; count: number }> = [
+    { group: 'GK',  count: 1 },
+    { group: 'DEF', count: 2 },
+    { group: 'MID', count: 2 },
+    { group: 'ATT', count: 2 },
+  ]
+  const bench: EntityId[] = []
+  const benchUsed = new Set<EntityId>()
+  for (const { group, count } of BENCH_QUOTA) {
+    const picks = sortedByOv.filter(p =>
+      !used.has(p.id) && !benchUsed.has(p.id) && POS_GROUP[p.position] === group
+    ).slice(0, count)
+    for (const p of picks) {
+      benchUsed.add(p.id)
+      bench.push(p.id)
+    }
+  }
+  // Riempi fino a 7 se qualche quota non era soddisfatta
+  if (bench.length < 7) {
+    const remaining = sortedByOv.filter(p => !used.has(p.id) && !benchUsed.has(p.id))
+    for (const p of remaining) {
+      if (bench.length >= 7) break
+      benchUsed.add(p.id)
+      bench.push(p.id)
+    }
+  }
 
   return {
     formation: formation.name,

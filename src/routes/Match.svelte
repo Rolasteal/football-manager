@@ -200,12 +200,15 @@
   // Roberto's spec:
   //   +3 gol segnato,  -3 rigore sbagliato,  -1 espulsione,
   //   -0.5 giallo,  +3 GK para rigore,  -1 GK gol subito.
-  function gkOfTeam(teamId: EntityId | undefined): EntityId | undefined {
-    if (!career || !teamId) return undefined
-    return Object.values(career.players).find(p => p.teamId === teamId && p.position === 'GK')?.id
+  /** GK in campo = primo starter con position='GK' nella lineup.
+   *  Usa la lineup invece di "primo GK della rosa" — altrimenti su
+   *  team con 2 portieri si beccava sempre il #1 anche se in panchina. */
+  function gkOfLineup(lineup: Lineup | null): EntityId | undefined {
+    if (!career || !lineup) return undefined
+    return lineup.starters.find(id => career.players[id]?.position === 'GK')
   }
-  let homeGkId = $derived(gkOfTeam(myFixture?.homeId))
-  let awayGkId = $derived(gkOfTeam(myFixture?.awayId))
+  let homeGkId = $derived(gkOfLineup(homeLineup))
+  let awayGkId = $derived(gkOfLineup(awayLineup))
 
   function computeFantaBonus(events: MatchEvent[]): Record<EntityId, number> {
     const r: Record<EntityId, number> = {}
@@ -1365,7 +1368,6 @@
     padding: 0;
     background: #000;
     gap: 0;
-    position: relative;
   }
   .ov-break-img {
     position: absolute;
@@ -1376,8 +1378,9 @@
     animation: breakImgIn 0.7s cubic-bezier(0.16, 1, 0.3, 1);
     z-index: 2;
   }
-  /* Fallback testuale dietro l'img: se la PNG non carica, vedi comunque
-     un titolo gigante centrato con la palette nero+oro del design. */
+  /* Fallback testuale dietro l'img (z-index 1 vs img 2): se la PNG
+     non carica, vedi comunque un titolo gigante centrato in oro su
+     fondo nero solido (l'overlay copre tutta la viewport). */
   .ov-break-fallback {
     position: absolute;
     inset: 0;
@@ -1390,23 +1393,12 @@
     font-weight: 900;
     letter-spacing: 0.03em;
     line-height: 1.05;
-    background: radial-gradient(ellipse at center, rgba(0,0,0,0.95), rgba(0,0,0,0.99));
-    background-image:
+    background:
       radial-gradient(ellipse 80% 60% at 50% 50%, rgba(245, 158, 11, 0.18), transparent 60%),
       radial-gradient(ellipse at center, rgba(0, 0, 0, 0.96), rgba(0, 0, 0, 0.99));
-    color: transparent;
-    -webkit-background-clip: text;
-    background-clip: text;
-    z-index: 1;
-  }
-  .ov-break-fallback::before {
-    content: attr(data-text);
-  }
-  /* Trick: use background-clip text on a span inside. Simpler: solid gold. */
-  .overlay.o-break .ov-break-fallback {
-    background: radial-gradient(ellipse at center, rgba(0, 0, 0, 0.96), rgba(0, 0, 0, 0.99));
     color: #fcd34d;
     text-shadow: 0 6px 30px rgba(245, 158, 11, 0.5);
+    z-index: 1;
   }
   @keyframes breakImgIn {
     0%   { transform: scale(1.08); opacity: 0; }
@@ -1473,7 +1465,6 @@
     padding: 0;
     background: #000;
     gap: 0;
-    position: relative;
   }
   .overlay.o-mvp .ov-break-img {
     position: absolute;

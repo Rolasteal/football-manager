@@ -400,19 +400,11 @@ export function simulateMatch(opts: SimulateMatchOptions): MatchResult {
       const pool = defendingSide.players.filter(p => !sentOff.has(p.id))
       const card = pickRoleWeighted(rng, pool.length ? pool : defendingSide.players, ['DEF', 'MID'])
       if (!sentOff.has(card.id)) emitYellow(card, defendingSide, min)
-    } else if (min >= 60) {
-      // Sostituzione (semplificata: random)
-      const outP = attackingSide.players[Math.floor(rng.next() * attackingSide.players.length)]
-      const inP = attackingSide.players.find(p => p.id !== outP.id)
-      if (inP) {
-        events.push({
-          minute: min, second: rng.int(0, 59), kind: 'substitution',
-          side: attackingSide.side, playerId: outP.id, secondaryPlayerId: inP.id,
-          ballPosition: ballAt(attackingSide.side, ZONE_MID, rng),
-          commentary: tpl(rng, 'substitution', { p: shortName(outP), p2: shortName(inP) }),
-        })
-      }
     }
+    // NB: l'engine riceve solo gli 11 titolari (post-commit 81d6a98),
+    // quindi non può più emettere eventi `substitution` coerenti — la
+    // gestione delle sostituzioni live arriverà in Fase 2 (con accesso
+    // al bench e regole ruolo-compatibili: GK↔GK, ecc.).
   }
 
   // Ciclo minuti 1..90
