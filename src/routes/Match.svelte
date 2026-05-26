@@ -11,7 +11,7 @@
   const store = careerStore()
   let career = $derived(store.career)
 
-  type OverlayKind = 'goal' | 'yellow' | 'red' | 'half_time' | 'full_time' | 'kickoff' | 'second_half' | 'penalty' | 'penalty_outcome' | 'mvp'
+  type OverlayKind = 'goal' | 'own_goal' | 'yellow' | 'red' | 'half_time' | 'full_time' | 'kickoff' | 'second_half' | 'penalty' | 'penalty_outcome' | 'mvp'
   interface OverlayPayload {
     kind: OverlayKind
     side?: 'home' | 'away' | null
@@ -98,6 +98,7 @@
   // Durata overlay drammatici (NEUTRA rispetto a speed: la "pausa narrativa" è fissa)
   const OVERLAY_MS: Record<OverlayKind, number> = {
     goal: 4200,
+    own_goal: 4000,
     yellow: 2200,
     red: 3000,
     half_time: 5000,
@@ -253,6 +254,11 @@
         if (ev.secondaryPlayerId) adj(ev.secondaryPlayerId, +1)  // assist
         // -1 al portiere avversario per gol subito
         adj(ev.side === 'home' ? awayGkId : homeGkId, -1)
+      } else if (ev.kind === 'own_goal') {
+        // Autogol: -3 al difensore che ha deviato (è del team OPPOSTO a ev.side).
+        // -1 al portiere della stessa squadra del difensore (gol subito).
+        adj(ev.playerId, -3)
+        adj(ev.side === 'home' ? awayGkId : homeGkId, -1)
       } else if (ev.kind === 'yellow_card') {
         adj(ev.playerId, -0.5)
       } else if (ev.kind === 'red_card') {
@@ -290,16 +296,32 @@
 
   let fantaBonus = $derived(computeFantaBonus(shown))
 
-  // ====== BADGES ICONE accanto al nome (pallone gol, giallo, rosso, sub in/out) ======
-  interface PlayerBadges { goals: number; yellow: boolean; red: boolean; subIn: boolean; subOut: boolean }
+  // ====== BADGES ICONE accanto al nome (gol, assist, autogol, giallo, rosso, sub) ======
+  interface PlayerBadges {
+    goals: number
+    assists: number
+    ownGoals: number
+    yellow: boolean
+    red: boolean
+    subIn: boolean
+    subOut: boolean
+  }
+  function emptyBadges(): PlayerBadges {
+    return { goals: 0, assists: 0, ownGoals: 0, yellow: false, red: false, subIn: false, subOut: false }
+  }
   function computePlayerBadges(events: MatchEvent[]): Record<EntityId, PlayerBadges> {
     const r: Record<EntityId, PlayerBadges> = {}
     const ensure = (id: EntityId) => {
-      if (!r[id]) r[id] = { goals: 0, yellow: false, red: false, subIn: false, subOut: false }
+      if (!r[id]) r[id] = emptyBadges()
       return r[id]
     }
     for (const ev of events) {
-      if (ev.kind === 'goal' && ev.playerId) ensure(ev.playerId).goals++
+      if (ev.kind === 'goal' && ev.playerId) {
+        ensure(ev.playerId).goals++
+        // L'assist man è nel secondaryPlayerId (vedi engine tryShot)
+        if (ev.secondaryPlayerId) ensure(ev.secondaryPlayerId).assists++
+      }
+      if (ev.kind === 'own_goal' && ev.playerId) ensure(ev.playerId).ownGoals++
       if (ev.kind === 'yellow_card' && ev.playerId) ensure(ev.playerId).yellow = true
       if (ev.kind === 'red_card' && ev.playerId) ensure(ev.playerId).red = true
       if (ev.kind === 'substitution') {
@@ -312,7 +334,7 @@
   }
   let badges = $derived(computePlayerBadges(shown))
   function badgeOf(id: EntityId): PlayerBadges {
-    return badges[id] ?? { goals: 0, yellow: false, red: false, subIn: false, subOut: false }
+    return badges[id] ?? emptyBadges()
   }
 
   // ====== STATISTICHE LIVE (da shown[], non da result.stats che è il totale finale) ======
@@ -329,6 +351,7 @@
         case 'shot':           t.shots++; break
         case 'shot_on_target': t.shots++; t.shotsOnTarget++; break
         case 'goal':           t.shots++; t.shotsOnTarget++; break
+        case 'own_goal':       t.shots++; t.shotsOnTarget++; break
         case 'corner':         t.corners++; break
         case 'foul':           t.fouls++; break
         case 'yellow_card':    t.yellowCards++; break
@@ -473,6 +496,9 @@
       } else {
         payload = { kind: 'goal', side: ev.side, playerName: nameOf(ev.playerId), teamName: teamOfSide(ev.side) }
       }
+    } else if (ev.kind === 'own_goal') {
+      // ev.side = team che ottiene il gol (attacking). Player = difensore avversario.
+      payload = { kind: 'own_goal', side: ev.side, playerName: nameOf(ev.playerId), teamName: teamOfSide(ev.side) }
     } else if (ev.kind === 'yellow_card') {
       payload = { kind: 'yellow', side: ev.side, playerName: nameOf(ev.playerId), teamName: teamOfSide(ev.side) }
     } else if (ev.kind === 'red_card') {
@@ -567,7 +593,8 @@
     shown = [...shown, ev]
     currentIdx++
     clockSec = ev.minute * 60 + ev.second
-    if (ev.kind === 'goal') {
+    if (ev.kind === 'goal' || ev.kind === 'own_goal') {
+      // ev.side è sempre il team che SEGNA (per autogol l'engine inverte il side)
       if (ev.side === 'home') homeScore++
       if (ev.side === 'away') awayScore++
       goalFlash = true
@@ -749,6 +776,7 @@
       <div
         class="overlay"
         class:o-goal={overlay.kind === 'goal'}
+        class:o-own={overlay.kind === 'own_goal'}
         class:o-card={overlay.kind === 'yellow' || overlay.kind === 'red'}
         class:o-red={overlay.kind === 'red'}
         class:o-pen={overlay.kind === 'penalty'}
@@ -763,6 +791,16 @@
           {/if}
           {#if overlay.teamName}
             <div class="ov-team">{overlay.teamName}</div>
+          {/if}
+          <div class="ov-score">{homeScore} – {awayScore}</div>
+        {:else if overlay.kind === 'own_goal'}
+          <img class="ov-goal-img" src="/assets/match/Gol.png" alt="Autogol" />
+          <div class="ov-goal-text ov-own-text">AUTOGOL</div>
+          {#if overlay.playerName}
+            <div class="ov-scorer">{overlay.playerName}</div>
+          {/if}
+          {#if overlay.teamName}
+            <div class="ov-team">a favore di {overlay.teamName}</div>
           {/if}
           <div class="ov-score">{homeScore} – {awayScore}</div>
         {:else if overlay.kind === 'yellow'}
@@ -848,6 +886,8 @@
                     <span class="pname">
                       {lastNameOf(pid)}
                       {#each Array(badgeOf(pid).goals) as _, gi (gi)}<span class="badge-ball" title="Gol">⚽</span>{/each}
+                      {#each Array(badgeOf(pid).assists) as _, ai (ai)}<span class="badge-tag tag-assist" title="Assist">Ass.</span>{/each}
+                      {#each Array(badgeOf(pid).ownGoals) as _, oi (oi)}<span class="badge-tag tag-own" title="Autogol">Aut</span>{/each}
                       {#if badgeOf(pid).yellow}<span class="badge-yellow" title="Ammonito">🟨</span>{/if}
                       {#if badgeOf(pid).red}<span class="badge-red" title="Espulso">🟥</span>{/if}
                       {#if badgeOf(pid).subOut}<span class="sub-arrow sub-out" title="Sostituito">▼</span>{/if}
@@ -866,6 +906,8 @@
                         {lastNameOf(pid)}
                         {#if badgeOf(pid).subIn}<span class="sub-arrow sub-in" title="Entrato in campo">▲</span>{/if}
                         {#each Array(badgeOf(pid).goals) as _, gi (gi)}<span class="badge-ball" title="Gol">⚽</span>{/each}
+                        {#each Array(badgeOf(pid).assists) as _, ai (ai)}<span class="badge-tag tag-assist" title="Assist">Ass.</span>{/each}
+                        {#each Array(badgeOf(pid).ownGoals) as _, oi (oi)}<span class="badge-tag tag-own" title="Autogol">Aut</span>{/each}
                         {#if badgeOf(pid).yellow}<span class="badge-yellow" title="Ammonito">🟨</span>{/if}
                         {#if badgeOf(pid).red}<span class="badge-red" title="Espulso">🟥</span>{/if}
                         {#if bonusOf(pid) !== 0}<span class="bonus-chip" class:b-plus={bonusOf(pid) > 0}>{fmtBonus(bonusOf(pid))}</span>{/if}
@@ -890,6 +932,8 @@
                     <span class="pname">
                       {lastNameOf(pid)}
                       {#each Array(badgeOf(pid).goals) as _, gi (gi)}<span class="badge-ball" title="Gol">⚽</span>{/each}
+                      {#each Array(badgeOf(pid).assists) as _, ai (ai)}<span class="badge-tag tag-assist" title="Assist">Ass.</span>{/each}
+                      {#each Array(badgeOf(pid).ownGoals) as _, oi (oi)}<span class="badge-tag tag-own" title="Autogol">Aut</span>{/each}
                       {#if badgeOf(pid).yellow}<span class="badge-yellow" title="Ammonito">🟨</span>{/if}
                       {#if badgeOf(pid).red}<span class="badge-red" title="Espulso">🟥</span>{/if}
                       {#if badgeOf(pid).subOut}<span class="sub-arrow sub-out" title="Sostituito">▼</span>{/if}
@@ -908,6 +952,8 @@
                         {lastNameOf(pid)}
                         {#if badgeOf(pid).subIn}<span class="sub-arrow sub-in" title="Entrato in campo">▲</span>{/if}
                         {#each Array(badgeOf(pid).goals) as _, gi (gi)}<span class="badge-ball" title="Gol">⚽</span>{/each}
+                        {#each Array(badgeOf(pid).assists) as _, ai (ai)}<span class="badge-tag tag-assist" title="Assist">Ass.</span>{/each}
+                        {#each Array(badgeOf(pid).ownGoals) as _, oi (oi)}<span class="badge-tag tag-own" title="Autogol">Aut</span>{/each}
                         {#if badgeOf(pid).yellow}<span class="badge-yellow" title="Ammonito">🟨</span>{/if}
                         {#if badgeOf(pid).red}<span class="badge-red" title="Espulso">🟥</span>{/if}
                         {#if bonusOf(pid) !== 0}<span class="bonus-chip" class:b-plus={bonusOf(pid) > 0}>{fmtBonus(bonusOf(pid))}</span>{/if}
@@ -1450,6 +1496,21 @@
     to { opacity: 1; transform: translateY(0); }
   }
 
+  /* --- AUTOGOL (sfondo rossastro, testo rosso) --- */
+  .overlay.o-own {
+    background:
+      radial-gradient(ellipse 80% 60% at 50% 50%, rgba(220, 38, 38, 0.30), transparent 60%),
+      radial-gradient(ellipse at center, rgba(0, 0, 0, 0.93) 40%, rgba(0, 0, 0, 0.99) 100%);
+  }
+  .ov-own-text {
+    color: transparent;
+    background: linear-gradient(180deg, #fecaca 0%, #f87171 35%, #b91c1c 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    filter: drop-shadow(0 8px 40px rgba(220, 38, 38, 0.55));
+  }
+
   /* --- CARTELLINI (arbitro PNG) --- */
   .overlay.o-card { gap: 18px; }
   .overlay.o-red {
@@ -1723,6 +1784,30 @@
     filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.6));
   }
   .badge-ball + .badge-ball { margin-left: 1px; }
+
+  /* Tag rettangolari trasparenti: Ass. (assist) / Aut (autogol) accanto al
+     nome del giocatore. Bordo + testo colorati, sfondo trasparente. */
+  .badge-tag {
+    display: inline-block;
+    margin-left: 4px;
+    padding: 1px 5px;
+    font-size: 9px;
+    font-weight: 800;
+    letter-spacing: 0.05em;
+    line-height: 1.2;
+    vertical-align: middle;
+    background: transparent;
+    border-radius: 3px;
+    text-transform: uppercase;
+  }
+  .badge-tag.tag-assist {
+    color: #fcd34d;
+    border: 1px solid rgba(252, 211, 77, 0.7);
+  }
+  .badge-tag.tag-own {
+    color: #fca5a5;
+    border: 1px solid rgba(220, 38, 38, 0.7);
+  }
 
   /* Frecce sostituzione: verde ▲ per chi entra, rossa ▼ per chi esce.
      L'uscito resta nella sezione titolari (con freccia rossa), l'entrato

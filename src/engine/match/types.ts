@@ -30,6 +30,7 @@ export type MatchEventKind =
   | 'shot'
   | 'shot_on_target'
   | 'goal'
+  | 'own_goal'
   | 'save'
   | 'foul'
   | 'yellow_card'

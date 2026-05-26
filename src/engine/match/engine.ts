@@ -499,6 +499,34 @@ export function simulateMatch(opts: SimulateMatchOptions): MatchResult {
     })
   }
 
+  /**
+   * AUTOGOL: una sfortunata deviazione di un difensore avversario porta
+   * il pallone nella propria porta. Statisticamente ~1.5-2% dei gol totali
+   * in calcio professionistico — usiamo prob bassissima per minor event.
+   * Lo "scorer" è il difensore (con note: 'autogol'), il gol va al team
+   * attaccante. Fanta-bonus: -3 al difensore (gestito in Match.svelte).
+   */
+  function tryOwnGoal(attSide: TeamSide, defSide: TeamSide, min: number) {
+    const defenders = defSide.players.filter(p =>
+      !sentOff.has(p.id) && (role(p) === 'DEF')
+    )
+    if (defenders.length === 0) return
+    const unlucky = defenders[Math.floor(rng.next() * defenders.length)]
+    const attStats = attSide.side === 'home' ? stats.home : stats.away
+    attStats.shots++
+    attStats.shotsOnTarget++
+    events.push({
+      minute: min, second: rng.int(0, 59), kind: 'own_goal',
+      side: attSide.side,           // gol attribuito alla squadra che attacca
+      playerId: unlucky.id,         // chi devia (difensore della squadra opposta)
+      ballPosition: ballAt(attSide.side, ZONE_ATT, rng),
+      commentary: tpl(rng, 'own_goal', { p: shortName(unlucky), min }),
+    })
+    if (attSide.side === 'home') homeScore++; else awayScore++
+    scorers.push({ playerId: unlucky.id, teamId: defSide.team.id, minute: min, note: 'autogol' })
+    ratings[unlucky.id] = clamp((ratings[unlucky.id] ?? 6) - 1.0, 1, 10)
+  }
+
   function tryMinorEvent(min: number) {
     // 30% prob filler, 25% fallo, 15% corner, 15% punizione, 10% giallo, 5% sub (solo dopo 60')
     const r = rng.next()
@@ -596,6 +624,12 @@ export function simulateMatch(opts: SimulateMatchOptions): MatchResult {
       const subProb = min >= 70 ? 0.10 : 0.06
       if (rng.chance(subProb)) trySubstitution(homeSide, min)
       if (rng.chance(subProb)) trySubstitution(awaySide, min)
+    }
+    // Autogol raro: ~0.12%/min → ~1 ogni 10 match (realistico Serie A)
+    if (rng.chance(0.0012)) {
+      const attackingSide = rng.chance(0.5) ? homeSide : awaySide
+      const defendingSide = attackingSide.side === 'home' ? awaySide : homeSide
+      tryOwnGoal(attackingSide, defendingSide, min)
     }
   }
 

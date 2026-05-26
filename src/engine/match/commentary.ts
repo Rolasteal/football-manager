@@ -37,6 +37,11 @@ export const TPL = {
     '⚽ Combinazione perfetta: {p2} per {p}, rete al {min}\'!',
     '⚽ {p2} pesca {p} in area, gol al {min}\'!',
   ],
+  own_goal: [
+    '😱 AUTOGOL di {p}! Sfortunatissima deviazione al {min}\'!',
+    '😱 {p} devia nella propria porta: autogol al {min}\'!',
+    '😱 Che disgrazia per {p}: il pallone finisce nella sua porta!',
+  ],
   shot_on_target: [
     '{p} ci prova: tiro in porta!',
     'Conclusione di {p} verso lo specchio.',
