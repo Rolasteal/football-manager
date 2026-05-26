@@ -5,6 +5,7 @@
   import { careerStore } from '$state/career.svelte'
   import { computeStandings } from '$engine/competition/standings'
   import { calcOverall } from '$engine/gen/player'
+  import { ensureClubFinances, fmtMoney, cashTrend, cashTrendPct } from '$engine/career/finances'
   import type { Fixture } from '$engine/competition/types'
 
   const store = careerStore()
@@ -60,6 +61,11 @@
   })
 
   let unreadNews = $derived(career ? career.news.filter(n => !n.read).slice(0, 4) : [])
+
+  // Finanze club (Fase 3.1) — ensureClubFinances popola lazy per save legacy
+  let finances = $derived(career ? ensureClubFinances(career) : null)
+  let trend = $derived(finances ? cashTrend(finances, 4) : [])
+  let trendPct = $derived(finances ? cashTrendPct(finances, 4) : 0)
 
   let advancing = $state(false)
 
@@ -164,6 +170,36 @@
           <div class="tile-big">—</div>
         {/if}
       </section>
+
+      <!-- Bilancio club (Fase 3.1) -->
+      {#if finances}
+        <section class="card-gold tile tile-finances anim-kickin anim-delay-400">
+          <div class="fin-head">
+            <span class="tile-l">BILANCIO</span>
+            {#if trend.length >= 2}
+              {@const up = trendPct >= 0}
+              <span class="fin-trend" class:up class:down={!up} title="Variazione cassa ultimi 4 turni">
+                {up ? '↑' : '↓'} {Math.abs(trendPct).toFixed(1).replace('.', ',')}%
+              </span>
+            {/if}
+          </div>
+          <div class="fin-cash text-gold">{fmtMoney(finances.cash)}</div>
+          <div class="fin-meta-list">
+            <div class="fin-row">
+              <span class="fin-row-l">Sponsor</span>
+              <span class="fin-row-v">{fmtMoney(finances.sponsorAnnual)}/anno</span>
+            </div>
+            <div class="fin-row">
+              <span class="fin-row-l">Ingaggi</span>
+              <span class="fin-row-v">{fmtMoney(finances.monthlyWageBudget)}/mese</span>
+            </div>
+            <div class="fin-row">
+              <span class="fin-row-l">Mercato</span>
+              <span class="fin-row-v">{fmtMoney(finances.transferBudget)}</span>
+            </div>
+          </div>
+        </section>
+      {/if}
 
       <!-- Ultimo risultato -->
       <section class="card-gold panel last-result anim-kickin anim-delay-400">
@@ -290,6 +326,50 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
+
+  /* Tile Bilancio — variante con header + 3 stat a piè card */
+  .tile-finances {
+    padding: 16px 18px;
+    gap: 4px;
+  }
+  .fin-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .fin-trend {
+    font-size: 11px;
+    font-weight: 700;
+    padding: 2px 7px;
+    border-radius: 6px;
+    letter-spacing: 0.04em;
+  }
+  .fin-trend.up   { color: #86efac; background: rgba(34, 197, 94, 0.14); border: 1px solid rgba(34, 197, 94, 0.4); }
+  .fin-trend.down { color: #fca5a5; background: rgba(220, 38, 38, 0.14); border: 1px solid rgba(220, 38, 38, 0.4); }
+  .fin-cash {
+    font-size: 30px;
+    font-weight: 800;
+    line-height: 1.05;
+    margin: 2px 0 10px;
+    letter-spacing: -0.01em;
+  }
+  .fin-meta-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-top: auto;
+    padding-top: 6px;
+    border-top: 1px solid rgba(252, 211, 77, 0.12);
+  }
+  .fin-row {
+    display: flex;
+    justify-content: space-between;
+    font-size: 11px;
+    line-height: 1.4;
+  }
+  .fin-row-l { color: #918778; text-transform: uppercase; letter-spacing: 0.08em; font-size: 10px; }
+  .fin-row-v { color: #d4cfc1; font-weight: 600; }
 
   .panel { padding: 18px 22px; }
   .panel.last-result { grid-column: span 2; }

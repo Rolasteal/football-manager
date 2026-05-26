@@ -19,6 +19,7 @@ import { createWorld } from '$engine/gen/world'
 import { buildAllSchedules } from '$engine/gen/schedule'
 import { simulateMatch } from '$engine/match/engine'
 import { calcOverall } from '$engine/gen/player'
+import { initClubFinances, weeklyTick as financesWeeklyTick } from './finances'
 
 // ====== Formazioni standard ======
 
@@ -307,6 +308,8 @@ export function buildCareerFromPreview(preview: PreviewWorld, opts: Omit<CreateC
     fixtures,
     club,
     news: initialNews,
+    // Fase 3.1: finanze club ricche per il mio club
+    clubFinances: initClubFinances(myTeam),
   }
   return career
 }
@@ -399,6 +402,10 @@ export function advanceMatchday(career: Career): AdvanceMatchdayResult {
 
   career.season.currentMatchday++
   career.updatedAt = Date.now()
+
+  // Fase 3.1: tick settimanale finanze (ricavi/spese del mio club + AI teams).
+  // Si appoggia a ensureClubFinances per save legacy.
+  financesWeeklyTick(career, md)
 
   // Mantieni news a max 50
   if (career.news.length > 50) career.news.length = 50

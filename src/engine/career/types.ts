@@ -8,6 +8,49 @@ import type { Fixture } from '$engine/competition/types'
 import type { Tactics, Lineup } from '$engine/tactics/types'
 import type { BettingCareerData } from '$engine/betting/types'
 
+// ====== Finanze club (Fase 3.1) ======
+
+/** Voce singola di movimento finanziario, per history/trend in Dashboard */
+export interface FinanceEntry {
+  /** Giornata di campionato in cui è avvenuto il movimento */
+  matchday: number
+  /** Etichetta breve (es. "Sponsor", "Stipendi", "Gate", "Premi") */
+  label: string
+  /** Importo in € (positivo = ricavo, negativo = spesa) */
+  amount: number
+  /** Saldo cassa DOPO questo movimento */
+  balanceAfter: number
+}
+
+/**
+ * Finanze dettagliate del club del giocatore.
+ * Solo per `career.club.teamId`. Per le AI usiamo direttamente `team.balance`.
+ *
+ * Sincronia con Team.balance:
+ * - `cash` è la single source of truth per il MIO club
+ * - dopo ogni mutation, `teams[myTeamId].balance` viene allineato a `cash`
+ * - in questo modo il resto del codice che legge `team.balance` (es. mercato AI futuro)
+ *   funziona uniformemente per tutti i team
+ */
+export interface ClubFinances {
+  /** Cassa attuale in € (allineata a team.balance del mio club) */
+  cash: number
+  /** Monte ingaggi mensile in € (somma stipendi rosa) */
+  monthlyWageBudget: number
+  /** Sponsor maglia annuale in € — pagato pro-rata settimanale */
+  sponsorAnnual: number
+  /** Premi competizioni accumulati nella stagione corrente in € */
+  prizeMoneyEarned: number
+  /** Budget mercato disponibile in € — usato in Fase 3.4 */
+  transferBudget: number
+  /** Ricavi medi settimanali stimati in € (gate + sponsor pro-rata + merch) */
+  weeklyIncome: number
+  /** Spese medie settimanali stimate in € (stipendi/4 + manutenzione + scouting) */
+  weeklyExpenses: number
+  /** Ultimi ~30 movimenti per grafico trend / log finanze */
+  history: FinanceEntry[]
+}
+
 export interface Manager {
   id: EntityId
   name: string
@@ -78,4 +121,11 @@ export interface Career {
    * Vedi docs/specs/betting/BETTING_SPEC.md.
    */
   bettingCareerData?: BettingCareerData
+
+  /**
+   * Finanze dettagliate del club del giocatore. Opzionale per backward-compat con
+   * save legacy: se mancante, ensureClubFinances() in $engine/career/finances la
+   * inizializza al volo dalla `reputation` del team. Fase 3.1.
+   */
+  clubFinances?: ClubFinances
 }
