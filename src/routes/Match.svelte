@@ -394,6 +394,8 @@
       '/assets/match/Rigore_segnato_incrocio.png',
       '/assets/match/Rigore_segnato_sx.png',
       '/assets/match/Rigore_segnato_cucchiaio.png',
+      '/assets/match/Rigore_gol_destra.png',
+      '/assets/match/Rigore_segnato_destra.png',
     ]
     // Preload BLOCCANTE: aspetta che le PNG siano in cache prima di mostrare
     // l'overlay kickoff (altrimenti il primo overlay è nero senza immagine).
@@ -649,13 +651,12 @@
    *  finché non arrivano le immagini dedicate. */
   function penaltyAsset(n: MatchEventNote | undefined): string {
     switch (n) {
-      // === Rigore SEGNATO — stile ===
+      // === Rigore SEGNATO — stile (5 PNG complete) ===
       case 'pen_goal_top_left':   return '/assets/match/Rigore_segnato_incrocio.png'
+      case 'pen_goal_top_right':  return '/assets/match/Rigore_gol_destra.png'
       case 'pen_goal_low_left':   return '/assets/match/Rigore_segnato_sx.png'
+      case 'pen_goal_low_right':  return '/assets/match/Rigore_segnato_destra.png'
       case 'pen_goal_chip':       return '/assets/match/Rigore_segnato_cucchiaio.png'
-      // Fallback temporanei (Roberto deve ancora fornire incrocio dx / rasoterra dx)
-      case 'pen_goal_top_right':  return '/assets/match/Gol.png'
-      case 'pen_goal_low_right':  return '/assets/match/Gol.png'
       // === Rigore PARATO ===
       case 'pen_saved_left':      return '/assets/match/Rigore_parato_sx.png'
       case 'pen_saved_center':    return '/assets/match/Rigore_parato_centro.png'
