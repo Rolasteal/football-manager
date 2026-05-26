@@ -226,7 +226,12 @@
       } else if (ev.kind === 'yellow_card') {
         adj(ev.playerId, -0.5)
       } else if (ev.kind === 'red_card') {
-        adj(ev.playerId, -1)
+        // Spec Roberto: 2° giallo → malus TOTALE -1 (cioè i 2 gialli da
+        // -0.5 sono sufficienti, il rosso 'second_yellow' non aggiunge nulla).
+        // Rosso DIRETTO → -1.5 secco (niente giallo prima).
+        if (ev.note !== 'second_yellow') {
+          adj(ev.playerId, -1.5)
+        }
       } else if (ev.kind === 'penalty') {
         // Esito del rigore: cerca nei prossimi eventi
         for (let j = i + 1; j < Math.min(i + 5, events.length); j++) {
@@ -255,22 +260,29 @@
 
   let fantaBonus = $derived(computeFantaBonus(shown))
 
-  // ====== BADGES ICONE accanto al nome (pallone gol, giallo, rosso) ======
-  interface PlayerBadges { goals: number; yellow: boolean; red: boolean }
+  // ====== BADGES ICONE accanto al nome (pallone gol, giallo, rosso, sub in/out) ======
+  interface PlayerBadges { goals: number; yellow: boolean; red: boolean; subIn: boolean; subOut: boolean }
   function computePlayerBadges(events: MatchEvent[]): Record<EntityId, PlayerBadges> {
     const r: Record<EntityId, PlayerBadges> = {}
+    const ensure = (id: EntityId) => {
+      if (!r[id]) r[id] = { goals: 0, yellow: false, red: false, subIn: false, subOut: false }
+      return r[id]
+    }
     for (const ev of events) {
-      if (!ev.playerId) continue
-      if (!r[ev.playerId]) r[ev.playerId] = { goals: 0, yellow: false, red: false }
-      if (ev.kind === 'goal') r[ev.playerId].goals++
-      if (ev.kind === 'yellow_card') r[ev.playerId].yellow = true
-      if (ev.kind === 'red_card') r[ev.playerId].red = true
+      if (ev.kind === 'goal' && ev.playerId) ensure(ev.playerId).goals++
+      if (ev.kind === 'yellow_card' && ev.playerId) ensure(ev.playerId).yellow = true
+      if (ev.kind === 'red_card' && ev.playerId) ensure(ev.playerId).red = true
+      if (ev.kind === 'substitution') {
+        // playerId = chi esce, secondaryPlayerId = chi entra
+        if (ev.playerId) ensure(ev.playerId).subOut = true
+        if (ev.secondaryPlayerId) ensure(ev.secondaryPlayerId).subIn = true
+      }
     }
     return r
   }
   let badges = $derived(computePlayerBadges(shown))
   function badgeOf(id: EntityId): PlayerBadges {
-    return badges[id] ?? { goals: 0, yellow: false, red: false }
+    return badges[id] ?? { goals: 0, yellow: false, red: false, subIn: false, subOut: false }
   }
 
   // ====== STATISTICHE LIVE (da shown[], non da result.stats che è il totale finale) ======
@@ -340,7 +352,7 @@
       '/assets/match/Fine_primo_tempo.png',
       '/assets/match/Inizio_secondo_tempo.png',
       '/assets/match/Fine_partita.png',
-      '/assets/match/Mvp.png',
+      '/assets/match/MVP.png',
     ]
     // Preload BLOCCANTE: aspetta che le PNG siano in cache prima di mostrare
     // l'overlay kickoff (altrimenti il primo overlay è nero senza immagine).
@@ -684,7 +696,7 @@
             <div class="ov-pen-sub">per il <strong>{overlay.teamName}</strong></div>
           {/if}
         {:else if overlay.kind === 'mvp'}
-          <img class="ov-break-img" src="/assets/match/Mvp.png" alt="MVP" />
+          <img class="ov-break-img" src="/assets/match/MVP.png" alt="MVP" />
           {#if overlay.mvpId}
             <div class="ov-mvp-info">
               <div class="ov-mvp-name">{lastNameOf(overlay.mvpId)}</div>
@@ -732,6 +744,8 @@
                       {#each Array(badgeOf(pid).goals) as _, gi (gi)}<span class="badge-ball" title="Gol">⚽</span>{/each}
                       {#if badgeOf(pid).yellow}<span class="badge-yellow" title="Ammonito">🟨</span>{/if}
                       {#if badgeOf(pid).red}<span class="badge-red" title="Espulso">🟥</span>{/if}
+                      {#if badgeOf(pid).subOut}<span class="sub-arrow sub-out" title="Sostituito">▼</span>{/if}
+                      {#if badgeOf(pid).subIn}<span class="sub-arrow sub-in" title="Entrato in campo">▲</span>{/if}
                       {#if bonusOf(pid) !== 0}<span class="bonus-chip" class:b-plus={bonusOf(pid) > 0}>{fmtBonus(bonusOf(pid))}</span>{/if}
                     </span>
                     <span class="rate {ratingClass(totalOf(pid))}">{fmtRating(totalOf(pid))}</span>
@@ -742,7 +756,14 @@
                   {#each homeLineup.bench as pid (pid)}
                     <li class="lp-row sub">
                       <span class="shirt">{shirtOf(pid)}</span>
-                      <span class="pname">{lastNameOf(pid)}</span>
+                      <span class="pname">
+                        {lastNameOf(pid)}
+                        {#if badgeOf(pid).subIn}<span class="sub-arrow sub-in" title="Entrato in campo">▲</span>{/if}
+                        {#each Array(badgeOf(pid).goals) as _, gi (gi)}<span class="badge-ball" title="Gol">⚽</span>{/each}
+                        {#if badgeOf(pid).yellow}<span class="badge-yellow" title="Ammonito">🟨</span>{/if}
+                        {#if badgeOf(pid).red}<span class="badge-red" title="Espulso">🟥</span>{/if}
+                        {#if bonusOf(pid) !== 0}<span class="bonus-chip" class:b-plus={bonusOf(pid) > 0}>{fmtBonus(bonusOf(pid))}</span>{/if}
+                      </span>
                       <span class="rate {ratingClass(totalOf(pid))}">{fmtRating(totalOf(pid))}</span>
                     </li>
                   {/each}
@@ -765,6 +786,8 @@
                       {#each Array(badgeOf(pid).goals) as _, gi (gi)}<span class="badge-ball" title="Gol">⚽</span>{/each}
                       {#if badgeOf(pid).yellow}<span class="badge-yellow" title="Ammonito">🟨</span>{/if}
                       {#if badgeOf(pid).red}<span class="badge-red" title="Espulso">🟥</span>{/if}
+                      {#if badgeOf(pid).subOut}<span class="sub-arrow sub-out" title="Sostituito">▼</span>{/if}
+                      {#if badgeOf(pid).subIn}<span class="sub-arrow sub-in" title="Entrato in campo">▲</span>{/if}
                       {#if bonusOf(pid) !== 0}<span class="bonus-chip" class:b-plus={bonusOf(pid) > 0}>{fmtBonus(bonusOf(pid))}</span>{/if}
                     </span>
                     <span class="shirt">{shirtOf(pid)}</span>
@@ -775,7 +798,14 @@
                   {#each awayLineup.bench as pid (pid)}
                     <li class="lp-row sub">
                       <span class="rate {ratingClass(totalOf(pid))}">{fmtRating(totalOf(pid))}</span>
-                      <span class="pname">{lastNameOf(pid)}</span>
+                      <span class="pname">
+                        {lastNameOf(pid)}
+                        {#if badgeOf(pid).subIn}<span class="sub-arrow sub-in" title="Entrato in campo">▲</span>{/if}
+                        {#each Array(badgeOf(pid).goals) as _, gi (gi)}<span class="badge-ball" title="Gol">⚽</span>{/each}
+                        {#if badgeOf(pid).yellow}<span class="badge-yellow" title="Ammonito">🟨</span>{/if}
+                        {#if badgeOf(pid).red}<span class="badge-red" title="Espulso">🟥</span>{/if}
+                        {#if bonusOf(pid) !== 0}<span class="bonus-chip" class:b-plus={bonusOf(pid) > 0}>{fmtBonus(bonusOf(pid))}</span>{/if}
+                      </span>
                       <span class="shirt">{shirtOf(pid)}</span>
                     </li>
                   {/each}
@@ -1578,6 +1608,31 @@
     filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.6));
   }
   .badge-ball + .badge-ball { margin-left: 1px; }
+
+  /* Frecce sostituzione: verde ▲ per chi entra, rossa ▼ per chi esce.
+     L'uscito resta nella sezione titolari (con freccia rossa), l'entrato
+     resta nella sezione panchina (con freccia verde) — niente swap. */
+  .sub-arrow {
+    display: inline-block;
+    margin-left: 4px;
+    font-size: 11px;
+    font-weight: 800;
+    line-height: 1;
+    vertical-align: middle;
+    padding: 1px 3px;
+    border-radius: 3px;
+    filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.6));
+  }
+  .sub-arrow.sub-in {
+    color: #4ade80;
+    background: rgba(34, 197, 94, 0.18);
+    border: 1px solid rgba(34, 197, 94, 0.5);
+  }
+  .sub-arrow.sub-out {
+    color: #f87171;
+    background: rgba(220, 38, 38, 0.18);
+    border: 1px solid rgba(220, 38, 38, 0.5);
+  }
 
   /* ========== PANNELLO FORMAZIONI + VOTI LIVE ========== */
   .lineups-head {

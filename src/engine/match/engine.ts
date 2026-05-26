@@ -56,11 +56,16 @@ function emptyStats(): TeamMatchStats {
 
 interface TeamSide {
   team: Team
+  /** Giocatori IN CAMPO — array mutabile, le sostituzioni togliere out e aggiungono in */
   players: Player[]
+  /** Riserve disponibili — chi è già entrato esce da qui */
+  bench: Player[]
   side: Side
   strength: number    // 30-99
   attStrength: number // media attaccanti
   defStrength: number // media difensori
+  /** Sostituzioni già usate (max 5) */
+  subsUsed: number
 }
 
 function role(p: Player): 'GK' | 'DEF' | 'MID' | 'ATT' {
@@ -77,12 +82,33 @@ function avg(nums: number[]): number {
   return nums.reduce((a, b) => a + b, 0) / nums.length
 }
 
-function buildSide(team: Team, players: Player[], side: Side): TeamSide {
+function buildSide(team: Team, players: Player[], bench: Player[], side: Side): TeamSide {
   const allOv = players.map(calcOverall)
   const strength = avg(allOv)
   const attStrength = avg(players.filter(p => role(p) === 'ATT').map(calcOverall))
   const defStrength = avg(players.filter(p => role(p) === 'DEF' || role(p) === 'GK').map(calcOverall))
-  return { team, players, side, strength, attStrength, defStrength }
+  return { team, players, bench, side, strength, attStrength, defStrength, subsUsed: 0 }
+}
+
+/** Ricalcola attStrength/defStrength dopo che un giocatore esce e uno entra,
+ *  oppure dopo un'espulsione (con `removed` non rimpiazzato). */
+function recomputeStrengths(t: TeamSide) {
+  const allOv = t.players.map(calcOverall)
+  // Forza media generale (usata per il numero atteso di tiri iniziale —
+  // non la ricalcoliamo perché expShots è già stato calcolato a inizio gara)
+  t.attStrength = avg(t.players.filter(p => role(p) === 'ATT').map(calcOverall))
+  t.defStrength = avg(t.players.filter(p => role(p) === 'DEF' || role(p) === 'GK').map(calcOverall))
+  // Strength generale ricalcolata per coerenza (anche se non usata dopo init)
+  t.strength = avg(allOv)
+}
+
+/** Penalità per la squadra che ha appena subito un'espulsione: meno forza
+ *  d'attacco (-12%) e di difesa (-10%) — riflesso del giocatore in meno.
+ *  Cumulativa: 2 espulsioni → 0.88² ≈ 0.77 attStrength residua. */
+function applyRedHandicap(t: TeamSide) {
+  t.attStrength *= 0.88
+  t.defStrength *= 0.90
+  t.strength    *= 0.90
 }
 
 function pickRoleWeighted(rng: Rng, players: Player[], roles: Array<'GK' | 'DEF' | 'MID' | 'ATT'>): Player {
@@ -117,26 +143,33 @@ function ballAt(side: Side, zone: PitchPoint, jitter: Rng): PitchPoint {
 export interface SimulateMatchOptions {
   home: Team
   away: Team
+  /** Titolari iniziali (11) — l'engine ne tiene traccia mutando l'array durante le sub */
   homePlayers: Player[]
   awayPlayers: Player[]
+  /** Riserve disponibili (default: bench vuota) — opzionali per backward-compat */
+  homeBench?: Player[]
+  awayBench?: Player[]
   rng: Rng
 }
 
 export function simulateMatch(opts: SimulateMatchOptions): MatchResult {
   const { home, away, homePlayers, awayPlayers, rng } = opts
-  const homeSide = buildSide(home, homePlayers, 'home')
-  const awaySide = buildSide(away, awayPlayers, 'away')
+  // Copia gli array così le mutazioni (sub, sentOff) non leakano fuori
+  const homeSide = buildSide(home, [...homePlayers], [...(opts.homeBench ?? [])], 'home')
+  const awaySide = buildSide(away, [...awayPlayers], [...(opts.awayBench ?? [])], 'away')
 
-  // Forza relativa con boost casa
-  const HOME_BOOST = 1.05
+  // Forza relativa con boost casa. Target: distribuzione casa/X/fuori
+  // ~46/27/27% come Serie A storica → boost casa ~+9% sui parametri chiave.
+  const HOME_BOOST = 1.09
   const fh = homeSide.strength * HOME_BOOST
   const fa = awaySide.strength
   const sumF = fh + fa
   const possHome = Math.round((fh / sumF) * 100)
 
-  // Numero tiri attesi (~12 base, ±forza)
-  const expShotsHome = clamp(8 + (fh - 50) * 0.16 + rng.gauss(0, 1.2), 4, 22)
-  const expShotsAway = clamp(8 + (fa - 50) * 0.16 + rng.gauss(0, 1.2), 4, 22)
+  // Numero tiri attesi (~12 base, ±forza). La casa parte con +0.6 tiri di
+  // baseline per riflettere pressione tifo / familiarità campo.
+  const expShotsHome = clamp(8.6 + (fh - 50) * 0.16 + rng.gauss(0, 1.2), 4, 22)
+  const expShotsAway = clamp(8.0 + (fa - 50) * 0.16 + rng.gauss(0, 1.2), 4, 22)
 
   const events: MatchEvent[] = []
   const stats: MatchStats = { home: emptyStats(), away: emptyStats() }
@@ -146,8 +179,10 @@ export function simulateMatch(opts: SimulateMatchOptions): MatchResult {
   const yellowCounts: Record<EntityId, number> = {}
   /** Set giocatori già espulsi (skip eventi successivi per loro) */
   const sentOff = new Set<EntityId>()
-  // Init ratings 6.0 per tutti
-  for (const p of [...homePlayers, ...awayPlayers]) ratings[p.id] = 6.0
+  // Init ratings 6.0 per tutti (titolari + bench, così chi entra parte da 6.0)
+  for (const p of [...homePlayers, ...awayPlayers, ...homeSide.bench, ...awaySide.bench]) {
+    ratings[p.id] = 6.0
+  }
 
   stats.home.possession = possHome
   stats.away.possession = 100 - possHome
@@ -204,7 +239,10 @@ export function simulateMatch(opts: SimulateMatchOptions): MatchResult {
     const finishing = shooter.attributes.finishing / 20
     const composure = shooter.attributes.composure / 20
     const defenseStrength = opp.defStrength / 99
-    const goalProb = clamp(0.30 * finishing + 0.10 * composure - 0.18 * defenseStrength + 0.05, 0.04, 0.45)
+    // Vantaggio casa: +0.02 di goalProb base (insieme al boost su expShots
+    // e poss porta la distribuzione casa/X/fuori intorno a 46/27/27%).
+    const homeAdv = side.side === 'home' ? 0.02 : 0
+    const goalProb = clamp(0.30 * finishing + 0.10 * composure - 0.18 * defenseStrength + 0.05 + homeAdv, 0.04, 0.45)
     const onTargetProb = clamp(0.55 + 0.10 * finishing - 0.05 * defenseStrength, 0.30, 0.85)
 
     if (rng.chance(goalProb)) {
@@ -261,7 +299,10 @@ export function simulateMatch(opts: SimulateMatchOptions): MatchResult {
 
   /**
    * Esegue un rigore: emette evento 'penalty' (assegnazione) + esito.
-   * Esito: gol 75%, parato 15%, sbagliato 10% (statistiche reali ~ Serie A).
+   * Distribuzione tratta da stats reali (Premier League / Serie A):
+   *   75% gol · 17% parato · 4% alto · 2% largo · 1% palo · 1% traversa
+   * Tutti gli eventi-tiro derivati hanno `note: 'penalty'` per essere
+   * riconosciuti dal calcolo fanta-bonus della UI senza re-scan eventi.
    */
   function tryPenalty(attSide: TeamSide, defSide: TeamSide, min: number, fouler: Player, fouled: Player) {
     const attStats = attSide.side === 'home' ? stats.home : stats.away
@@ -279,7 +320,7 @@ export function simulateMatch(opts: SimulateMatchOptions): MatchResult {
     const gk = defSide.players.find(p => p.position === 'GK' && !sentOff.has(p.id))
     if (!taker) return
 
-    // 3. Esito
+    // 3. Esito — cumulative cutoffs su stats reali
     const roll = rng.next()
     const sec = rng.int(20, 50)
     attStats.shots++
@@ -291,28 +332,39 @@ export function simulateMatch(opts: SimulateMatchOptions): MatchResult {
         side: attSide.side, playerId: taker.id,
         ballPosition: ballAt(attSide.side, { x: 0.95, y: 0.5 }, rng),
         commentary: tpl(rng, 'penalty_goal', { p: shortName(taker), min }),
+        note: 'penalty',
       })
       if (attSide.side === 'home') homeScore++; else awayScore++
       scorers.push({ playerId: taker.id, teamId: attSide.team.id, minute: min, note: 'rigore' })
       ratings[taker.id] = clamp((ratings[taker.id] ?? 6) + 1.0, 1, 10)
-    } else if (roll < 0.90) {
-      // SAVED (paratona del portiere)
+    } else if (roll < 0.92) {
+      // SAVED (paratona del portiere) — 17%
       attStats.shotsOnTarget++
       events.push({
         minute: min, second: sec, kind: 'save',
         side: defSide.side, playerId: gk?.id, secondaryPlayerId: taker.id,
         ballPosition: ballAt(defSide.side, { x: 0.05, y: 0.5 }, rng),
         commentary: tpl(rng, 'penalty_saved', { p: shortName(taker), p2: gk ? shortName(gk) : 'il portiere' }),
+        note: 'penalty',
       })
       if (gk) ratings[gk.id] = clamp((ratings[gk.id] ?? 6) + 0.8, 1, 10)
       ratings[taker.id] = clamp((ratings[taker.id] ?? 6) - 0.3, 1, 10)
     } else {
-      // MISSED (alto/largo)
+      // MISSED — fuori dello specchio (8%): 4 high / 2 wide / 1 post / 1 crossbar
+      // Sotto-distribuzione: 0.50 high, 0.25 wide, 0.125 post, 0.125 crossbar
+      const sub = rng.next()
+      let subNote: 'high' | 'wide' | 'post' | 'crossbar'
+      let tplKey: 'penalty_high' | 'penalty_wide' | 'penalty_post' | 'penalty_crossbar'
+      if (sub < 0.50)      { subNote = 'high';     tplKey = 'penalty_high' }
+      else if (sub < 0.75) { subNote = 'wide';     tplKey = 'penalty_wide' }
+      else if (sub < 0.875){ subNote = 'post';     tplKey = 'penalty_post' }
+      else                 { subNote = 'crossbar'; tplKey = 'penalty_crossbar' }
       events.push({
         minute: min, second: sec, kind: 'shot',
         side: attSide.side, playerId: taker.id,
         ballPosition: ballAt(attSide.side, { x: 0.99, y: 0.5 }, rng),
-        commentary: tpl(rng, 'penalty_missed', { p: shortName(taker), min }),
+        commentary: tpl(rng, tplKey, { p: shortName(taker), min }),
+        note: subNote,
       })
       ratings[taker.id] = clamp((ratings[taker.id] ?? 6) - 0.5, 1, 10)
     }
@@ -334,17 +386,99 @@ export function simulateMatch(opts: SimulateMatchOptions): MatchResult {
 
     yellowCounts[card.id] = (yellowCounts[card.id] ?? 0) + 1
     if (yellowCounts[card.id] >= 2 && !sentOff.has(card.id)) {
-      // Secondo giallo → espulsione
+      // Secondo giallo → espulsione (note: 'second_yellow' per fanta-bonus)
       sentOff.add(card.id)
+      // Rimuove il giocatore dal pool in campo della propria squadra
+      defendingSide.players = defendingSide.players.filter(p => p.id !== card.id)
       events.push({
         minute: min, second: rng.int(0, 59), kind: 'red_card',
         side: defendingSide.side, playerId: card.id,
         ballPosition: ballAt(defendingSide.side, ZONE_MID, rng),
         commentary: tpl(rng, 'red_card_second_yellow', { p: shortName(card), t: defendingSide.team.name }),
+        note: 'second_yellow',
       })
       if (defendingSide.side === 'home') stats.home.redCards++; else stats.away.redCards++
       ratings[card.id] = clamp((ratings[card.id] ?? 6) - 0.6, 1, 10)
+      applyRedHandicap(defendingSide)
     }
+  }
+
+  /**
+   * Espulsione DIRETTA (brutto fallo): la prob è bassissima — ~0.5%
+   * dei falli (Serie A: ~0.13 dirette/match su ~25 falli/match).
+   */
+  function emitDirectRed(card: Player, defendingSide: TeamSide, min: number) {
+    if (sentOff.has(card.id)) return
+    sentOff.add(card.id)
+    // Rimuove il giocatore dal pool in campo della propria squadra
+    defendingSide.players = defendingSide.players.filter(p => p.id !== card.id)
+    events.push({
+      minute: min, second: rng.int(0, 59), kind: 'red_card',
+      side: defendingSide.side, playerId: card.id,
+      ballPosition: ballAt(defendingSide.side, ZONE_MID, rng),
+      commentary: tpl(rng, 'red_card', { p: shortName(card) }),
+      note: 'direct',
+    })
+    if (defendingSide.side === 'home') stats.home.redCards++; else stats.away.redCards++
+    ratings[card.id] = clamp((ratings[card.id] ?? 6) - 0.8, 1, 10)
+    applyRedHandicap(defendingSide)
+  }
+
+  /**
+   * Sceglie un titolare da sostituire e una riserva ruolo-compatibile.
+   * - outP: tra i NON-GK (a meno che il GK titolare non sia stato espulso)
+   *         con rating più basso (così esce chi sta giocando peggio).
+   * - inP:  dal bench, stesso gruppo (DEF/MID/ATT) di outP, miglior overall.
+   *         Se non c'è ruolo-compatibile, prende il miglior overall residuo.
+   * - GK:   se outP è il GK in campo (perché espulso), inP è scelto solo tra
+   *         i GK del bench. Se non ci sono GK nel bench, salta la sub.
+   */
+  function trySubstitution(t: TeamSide, min: number) {
+    if (t.subsUsed >= 5) return
+    if (t.bench.length === 0) return
+
+    const onPitch = t.players.filter(p => !sentOff.has(p.id))
+    if (onPitch.length === 0) return
+
+    // Candidato uscente: priorità a chi ha rating basso o è già stato sostituito (no)
+    // Escludiamo GK in campo a meno che non sia già espulso (caso raro)
+    const eligibleOut = onPitch.filter(p => p.position !== 'GK')
+    let outP: Player | undefined
+    let needsGk = false
+    if (eligibleOut.length === 0) {
+      // Solo GK in campo? Skip.
+      return
+    }
+    // Sceglie out: il 30% delle volte rating più basso, altrimenti random
+    if (rng.chance(0.3)) {
+      outP = [...eligibleOut].sort((a, b) => (ratings[a.id] ?? 6) - (ratings[b.id] ?? 6))[0]
+    } else {
+      outP = eligibleOut[Math.floor(rng.next() * eligibleOut.length)]
+    }
+    if (!outP) return
+
+    // Candidato entrante dal bench (stesso gruppo ruolo)
+    const outGroup = role(outP)
+    const benchByRole = t.bench.filter(p => role(p) === outGroup)
+    const benchAny = t.bench.filter(p => p.position !== 'GK' || needsGk)
+    let inP = benchByRole.length > 0
+      ? [...benchByRole].sort((a, b) => calcOverall(b) - calcOverall(a))[0]
+      : [...benchAny].sort((a, b) => calcOverall(b) - calcOverall(a))[0]
+    if (!inP) return
+
+    // Mutazione lineup in campo: out esce, in entra. Gli eventi successivi
+    // pescano da t.players quindi outP non sarà più scelto automaticamente.
+    t.bench = t.bench.filter(p => p.id !== inP!.id)
+    t.players = [...t.players.filter(p => p.id !== outP!.id), inP]
+    t.subsUsed++
+    recomputeStrengths(t)
+
+    events.push({
+      minute: min, second: rng.int(0, 59), kind: 'substitution',
+      side: t.side, playerId: outP.id, secondaryPlayerId: inP.id,
+      ballPosition: ballAt(t.side, ZONE_MID, rng),
+      commentary: tpl(rng, 'substitution', { p: shortName(outP), p2: shortName(inP) }),
+    })
   }
 
   function tryMinorEvent(min: number) {
@@ -361,12 +495,25 @@ export function simulateMatch(opts: SimulateMatchOptions): MatchResult {
         commentary: tpl(rng, 'filler', { t: attackingSide.team.name }),
       })
     } else if (r < 0.55) {
-      // Fallo — ~7% probabilità che sia in area di rigore
-      const fouler = pickRoleWeighted(rng, defendingSide.players, ['DEF', 'MID'])
+      // Fallo — ~7% probabilità che sia in area di rigore, ~0.5%
+      // che sia brutto fallo da espulsione diretta (Serie A reale)
+      const foulerPool = defendingSide.players.filter(p => !sentOff.has(p.id))
+      if (foulerPool.length === 0) return
+      const fouler = pickRoleWeighted(rng, foulerPool, ['DEF', 'MID'])
       const fouled = pickRoleWeighted(rng, attackingSide.players, ['ATT', 'MID'])
       if (defendingSide.side === 'home') stats.home.fouls++; else stats.away.fouls++
       ratings[fouler.id] = clamp((ratings[fouler.id] ?? 6) - 0.05, 1, 10)
-      if (rng.chance(0.07)) {
+      if (rng.chance(0.005)) {
+        // ROSSO DIRETTO: emette PRIMA il fallo (così c'è contesto in cronaca),
+        // poi il rosso. Senza rigore associato (non in area).
+        events.push({
+          minute: min, second: rng.int(0, 59), kind: 'foul',
+          side: defendingSide.side, playerId: fouler.id, secondaryPlayerId: fouled.id,
+          ballPosition: ballAt(defendingSide.side, ZONE_MID, rng),
+          commentary: tpl(rng, 'foul', { p: shortName(fouler), p2: shortName(fouled) }),
+        })
+        emitDirectRed(fouler, defendingSide, min)
+      } else if (rng.chance(0.07)) {
         // Rigore!
         tryPenalty(attackingSide, defendingSide, min, fouler, fouled)
       } else {
@@ -418,6 +565,13 @@ export function simulateMatch(opts: SimulateMatchOptions): MatchResult {
     // Eventi minori: ~50% prob ogni minuto in cui non c'è tiro
     if (!homeShotSet.has(min) && !awayShotSet.has(min) && rng.chance(0.55)) {
       tryMinorEvent(min)
+    }
+    // Sostituzioni: finestra 55'-88', ~7% chance per squadra per minuto
+    // → ~2-3 sub a partita per team (max 5/team). Cresce dopo il 70'.
+    if (min >= 55 && min <= 88) {
+      const subProb = min >= 70 ? 0.10 : 0.06
+      if (rng.chance(subProb)) trySubstitution(homeSide, min)
+      if (rng.chance(subProb)) trySubstitution(awaySide, min)
     }
   }
 

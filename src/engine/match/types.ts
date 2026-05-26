@@ -43,6 +43,15 @@ export type MatchEventKind =
 
 export type Side = 'home' | 'away'
 
+/** Sotto-tipo del kind, per discriminare esiti di rigori, espulsioni, ecc.
+ *  - 'post' | 'crossbar' | 'high' | 'wide': rigore sbagliato (palo / traversa / alto / largo)
+ *  - 'direct' | 'second_yellow': red_card dovuto a brutto fallo / doppia ammonizione
+ *  - 'penalty': qualifica un goal/shot/save come esito di un rigore (utile per fanta-bonus) */
+export type MatchEventNote =
+  | 'post' | 'crossbar' | 'high' | 'wide'
+  | 'direct' | 'second_yellow'
+  | 'penalty'
+
 export interface MatchEvent {
   /** Minuto simulato 0-90 (+ recupero) */
   minute: number
@@ -58,6 +67,8 @@ export interface MatchEvent {
   secondaryPlayerId?: EntityId
   /** Commentario testuale generato (può essere null se semplice movimento) */
   commentary?: string
+  /** Sotto-tipo discriminante per esiti specifici (rigore sbagliato dove, red diretto, ecc.) */
+  note?: MatchEventNote
 }
 
 export interface MatchSnapshot {

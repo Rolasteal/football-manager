@@ -58,8 +58,9 @@ export const TPL = {
     '🟨 L\'arbitro estrae il giallo: {p}.',
   ],
   red_card: [
-    '🟥 ROSSO per {p}! Espulso!',
-    '🟥 {p} viene cacciato dal campo!',
+    '🟥 ROSSO DIRETTO per {p}! Brutto fallo: espulso!',
+    '🟥 {p} viene cacciato dal campo per condotta violenta!',
+    '🟥 L\'arbitro non esita: rosso diretto a {p}!',
   ],
   red_card_second_yellow: [
     '🟨🟥 Secondo giallo per {p}: espulso!',
@@ -85,6 +86,24 @@ export const TPL = {
     '😱 {p} sbaglia il rigore: pallone fuori!',
     '😱 Disastro {p}: spreca il rigore al {min}\'!',
     '😱 Tiro alle stelle di {p}: rigore sbagliato!',
+  ],
+  penalty_post: [
+    '🟫 PALO! {p} prende il legno alla destra del portiere!',
+    '🟫 Sul palo di {p}! Sfortunatissimo dal dischetto.',
+    '🟫 Che sfortuna: il pallone di {p} bacia il palo!',
+  ],
+  penalty_crossbar: [
+    '🟫 TRAVERSA! {p} colpisce in pieno il legno superiore!',
+    '🟫 Sulla traversa di {p}! Pallone fuori di pochissimo.',
+    '🟫 Che sfortuna: traversa piena per {p} dal dischetto!',
+  ],
+  penalty_high: [
+    '☁️ {p} la spara alle stelle: rigore alto sopra la traversa!',
+    '☁️ Tiro altissimo di {p}: rigore in curva!',
+  ],
+  penalty_wide: [
+    '🚀 {p} calcia largo: rigore a lato!',
+    '🚀 Tiro impreciso di {p}: pallone fuori sul lato.',
   ],
   foul: [
     'Fallo di {p} su {p2}.',

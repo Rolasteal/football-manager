@@ -365,12 +365,19 @@ export function advanceMatchday(career: Career): AdvanceMatchdayResult {
     const homeLineup = isMyHome ? career.club.lineup : autoLineup(fallback, homeRoster)
     const awayLineup = isMyAway ? career.club.lineup : autoLineup(fallback, awayRoster)
 
-    // SOLO gli 11 titolari vanno all'engine — niente cartellini/eventi a riserve.
-    // Sostituzioni live verranno gestite in Fase 2.
+    // 11 titolari + 7 panchina vanno all'engine. Le sostituzioni live
+    // pescano dal bench (max 5/squadra, ruolo-compatibili).
     const homeStarters = homeLineup.starters.map(id => career.players[id]).filter(Boolean)
     const awayStarters = awayLineup.starters.map(id => career.players[id]).filter(Boolean)
+    const homeBench    = homeLineup.bench.map(id => career.players[id]).filter(Boolean)
+    const awayBench    = awayLineup.bench.map(id => career.players[id]).filter(Boolean)
 
-    const result = simulateMatch({ home, away, homePlayers: homeStarters, awayPlayers: awayStarters, rng })
+    const result = simulateMatch({
+      home, away,
+      homePlayers: homeStarters, awayPlayers: awayStarters,
+      homeBench, awayBench,
+      rng,
+    })
     result.homeLineup = homeLineup
     result.awayLineup = awayLineup
     f.status = 'played'
