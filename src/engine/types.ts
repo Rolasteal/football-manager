@@ -14,9 +14,26 @@ export type Position =
 
 export type Foot = 'left' | 'right' | 'both'
 
-/** Attributi giocatore scala 1-20 stile FM */
+/**
+ * Attributi giocatore scala 1-20 stile Football Manager (Sega/SI Games).
+ *
+ * Struttura piatta (no nested) per coerenza con l'engine match esistente che
+ * legge `attributes.passing` ecc. I 15 attributi LEGACY (Fase 1-2) restano in
+ * cima e continuano a essere usati dall'engine; i nuovi attributi FM (Fase 3.A)
+ * sono opzionali per backward-compat con save legacy. Vengono popolati su nuovi
+ * giocatori dal generator e su save vecchi tramite `ensurePlayerFMAttributes`.
+ *
+ * Totale attributi FM (Fase 3.A):
+ * - 14 Tecnici (outfield only)
+ * - 14 Mentali (shared GK+outfield)
+ * - 8 Fisici (shared)
+ * - 11 Goalkeeping (GK only)
+ *
+ * Hidden attributes (consistency, injury proneness, professionalism, ecc.)
+ * saranno aggiunti in step futuro.
+ */
 export interface PlayerAttributes {
-  // Tecnici
+  // ===== LEGACY (Fase 1-2) — usati dall'engine match, restano =====
   passing: number
   shooting: number
   dribbling: number
@@ -24,17 +41,55 @@ export interface PlayerAttributes {
   crossing: number
   tackling: number
   heading: number
-  // Fisici
   pace: number
   stamina: number
   strength: number
-  // Mentali
   vision: number
   composure: number
   workRate: number
-  // Specifici portiere
   reflexes: number
   handling: number
+
+  // ===== TECHNICAL FM (outfield, opzionali per save legacy) =====
+  corners?: number
+  firstTouch?: number
+  freeKicks?: number
+  longShots?: number
+  longThrows?: number
+  marking?: number
+  penaltyTaking?: number
+  technique?: number
+
+  // ===== MENTAL FM (shared, opzionali) =====
+  aggression?: number
+  anticipation?: number
+  bravery?: number
+  concentration?: number
+  decisions?: number
+  determination?: number
+  flair?: number
+  leadership?: number
+  offTheBall?: number
+  positioning?: number
+  teamwork?: number
+
+  // ===== PHYSICAL FM (shared, opzionali) =====
+  acceleration?: number
+  agility?: number
+  balance?: number
+  jumpingReach?: number
+  naturalFitness?: number
+
+  // ===== GOALKEEPING FM (GK only, opzionali) =====
+  aerialReach?: number
+  commandOfArea?: number
+  communication?: number
+  eccentricity?: number
+  kicking?: number
+  oneOnOnes?: number
+  punchingTendency?: number
+  rushingOutTendency?: number
+  throwing?: number
 }
 
 export interface Player {
@@ -57,6 +112,15 @@ export interface Player {
   teamId: EntityId | null
   /** Numero di maglia, null se non assegnato */
   shirtNumber: number | null
+  /**
+   * Potential overall nascosto 30-99 — overall massimo che il giocatore può
+   * raggiungere durante la sua carriera. Assegnato alla generazione, immutabile.
+   * Usato dalla curva di crescita/declino in Fase 3.B (endOfSeason ageTick).
+   * Opzionale per backward-compat con save legacy: se mancante,
+   * `ensurePlayerFMAttributes` lo deduce come `currentOverall + bonus` per dare
+   * margine di crescita ai giovani.
+   */
+  potential?: number
 }
 
 export interface Team {

@@ -30,27 +30,85 @@ const TIER_STD: Record<TeamTier, number> = {
   low: 2.0,
 }
 
-/** Bias di attributo per ruolo: quanto un attributo sale o scende rispetto alla base */
+/**
+ * Bias di attributo per ruolo: quanto un attributo sale o scende rispetto alla
+ * base del tier. Copre l'intero set FM (Fase 3.A): tecnici, mentali, fisici,
+ * goalkeeping. Stile FM Sega: GK ha attributi specifici tutti alti e tecnici
+ * outfield tutti molto bassi; DEF marking/tackling/heading/jumping; MID
+ * passing/vision/teamwork; ATT finishing/composure/offTheBall.
+ */
 const ATTR_BIAS: Record<'GK' | 'DEF' | 'MID' | 'ATT', Partial<Record<keyof PlayerAttributes, number>>> = {
   GK: {
-    reflexes: +5, handling: +5,
-    passing: -3, shooting: -6, finishing: -6, dribbling: -5, crossing: -5,
-    heading: -2, tackling: -3, pace: -2, vision: -1, strength: +1,
+    // Goalkeeping FM: tutti alti
+    reflexes: +5, handling: +5, aerialReach: +4, commandOfArea: +4,
+    communication: +3, kicking: +3, oneOnOnes: +4, throwing: +3,
+    eccentricity: 0, punchingTendency: 0, rushingOutTendency: 0,
+    // Outfield tecnici: praticamente assenti
+    passing: -3, shooting: -6, finishing: -7, dribbling: -6, crossing: -6,
+    heading: -3, tackling: -4, corners: -7, firstTouch: -3, freeKicks: -5,
+    longShots: -7, longThrows: -2, marking: -3, penaltyTaking: -6, technique: -3,
+    // Mentali specifici del portiere: alti concentration/anticipation/positioning
+    concentration: +3, anticipation: +3, positioning: +3, decisions: +2,
+    composure: +2, bravery: +2, leadership: +1,
+    flair: -2, offTheBall: -5, teamwork: 0, workRate: -1, vision: 0,
+    aggression: 0, determination: +1,
+    // Fisici: strength e jumping discreti, pace e acceleration medi
+    pace: -1, acceleration: -1, agility: +1, balance: +1, jumpingReach: +2,
+    strength: +1, stamina: -1, naturalFitness: +1,
   },
   DEF: {
-    tackling: +3, heading: +2, strength: +2, stamina: +1,
-    finishing: -3, shooting: -3, dribbling: -2, crossing: -1,
-    reflexes: -8, handling: -8,
+    // Tecnici difensivi alti, attaccanti bassi
+    tackling: +3, marking: +4, heading: +2, longThrows: +1,
+    finishing: -4, shooting: -4, dribbling: -2, crossing: -1, corners: -1,
+    firstTouch: 0, freeKicks: -2, longShots: -3, penaltyTaking: -3,
+    technique: -1, passing: 0,
+    // Mentali: positioning/anticipation/concentration alti, flair basso
+    positioning: +3, anticipation: +2, concentration: +2, bravery: +2,
+    determination: +1, leadership: +1, aggression: +1, decisions: +1,
+    teamwork: +1, workRate: +1, composure: 0,
+    flair: -2, offTheBall: -2, vision: -1,
+    // Fisici: strength, jumping, balance alti
+    strength: +2, jumpingReach: +2, stamina: +1, balance: +1,
+    pace: 0, acceleration: 0, agility: 0, naturalFitness: 0,
+    // Goalkeeping: nulli
+    reflexes: -8, handling: -8, aerialReach: -8, commandOfArea: -8,
+    communication: -7, kicking: -7, oneOnOnes: -8, throwing: -7,
+    eccentricity: -5, punchingTendency: -5, rushingOutTendency: -5,
   },
   MID: {
-    passing: +2, vision: +2, stamina: +2, workRate: +2,
-    tackling: +0, heading: -1, finishing: -1, crossing: +1,
-    reflexes: -8, handling: -8,
+    // Tecnici: passing, technique, firstTouch alti; finishing/heading medi
+    passing: +3, technique: +2, firstTouch: +2, freeKicks: +1, corners: +1,
+    crossing: +1, longShots: +1, longThrows: 0, dribbling: +1,
+    heading: -1, finishing: -1, marking: 0, tackling: 0, shooting: 0,
+    penaltyTaking: 0,
+    // Mentali: vision, decisions, teamwork, workRate alti
+    vision: +3, decisions: +2, teamwork: +2, workRate: +2, anticipation: +2,
+    positioning: +1, concentration: +1, composure: +1, determination: +1,
+    flair: +1, offTheBall: +1, bravery: 0, leadership: 0, aggression: 0,
+    // Fisici: stamina, naturalFitness, balance alti
+    stamina: +2, naturalFitness: +2, balance: +1, agility: +1,
+    pace: 0, acceleration: 0, jumpingReach: 0, strength: 0,
+    // Goalkeeping: nulli
+    reflexes: -8, handling: -8, aerialReach: -8, commandOfArea: -8,
+    communication: -7, kicking: -7, oneOnOnes: -8, throwing: -7,
+    eccentricity: -5, punchingTendency: -5, rushingOutTendency: -5,
   },
   ATT: {
-    finishing: +3, shooting: +3, dribbling: +2, pace: +2, composure: +1,
-    tackling: -3, heading: 0, strength: 0,
-    reflexes: -8, handling: -8,
+    // Tecnici: finishing, dribbling, technique, firstTouch, longShots alti
+    finishing: +4, shooting: +3, dribbling: +3, technique: +2, firstTouch: +2,
+    longShots: +2, penaltyTaking: +1, crossing: 0, corners: 0, freeKicks: +1,
+    heading: 0, longThrows: -1, marking: -3, tackling: -3, passing: -1,
+    // Mentali: offTheBall, composure, anticipation, flair alti
+    offTheBall: +3, composure: +2, anticipation: +2, flair: +2, decisions: +1,
+    determination: +1, bravery: +1, concentration: +1, workRate: 0,
+    aggression: 0, vision: +1, teamwork: 0, leadership: 0, positioning: 0,
+    // Fisici: pace, acceleration, agility, balance alti
+    pace: +2, acceleration: +2, agility: +2, balance: +1, jumpingReach: 0,
+    strength: 0, stamina: 0, naturalFitness: 0,
+    // Goalkeeping: nulli
+    reflexes: -8, handling: -8, aerialReach: -8, commandOfArea: -8,
+    communication: -7, kicking: -7, oneOnOnes: -8, throwing: -7,
+    eccentricity: -5, punchingTendency: -5, rushingOutTendency: -5,
   }
 }
 
@@ -77,6 +135,7 @@ export function generateAttributes(rng: Rng, position: Position, tier: TeamTier)
   const a = (key: keyof PlayerAttributes) => clampAttr(rng.gauss(base + (bias[key] ?? 0), std))
 
   return {
+    // --- LEGACY (Fase 1-2, usati ancora dall'engine match) ---
     passing: a('passing'),
     shooting: a('shooting'),
     dribbling: a('dribbling'),
@@ -92,6 +151,47 @@ export function generateAttributes(rng: Rng, position: Position, tier: TeamTier)
     workRate: a('workRate'),
     reflexes: a('reflexes'),
     handling: a('handling'),
+
+    // --- TECHNICAL FM (Fase 3.A, outfield principalmente) ---
+    corners: a('corners'),
+    firstTouch: a('firstTouch'),
+    freeKicks: a('freeKicks'),
+    longShots: a('longShots'),
+    longThrows: a('longThrows'),
+    marking: a('marking'),
+    penaltyTaking: a('penaltyTaking'),
+    technique: a('technique'),
+
+    // --- MENTAL FM (shared) ---
+    aggression: a('aggression'),
+    anticipation: a('anticipation'),
+    bravery: a('bravery'),
+    concentration: a('concentration'),
+    decisions: a('decisions'),
+    determination: a('determination'),
+    flair: a('flair'),
+    leadership: a('leadership'),
+    offTheBall: a('offTheBall'),
+    positioning: a('positioning'),
+    teamwork: a('teamwork'),
+
+    // --- PHYSICAL FM (shared) ---
+    acceleration: a('acceleration'),
+    agility: a('agility'),
+    balance: a('balance'),
+    jumpingReach: a('jumpingReach'),
+    naturalFitness: a('naturalFitness'),
+
+    // --- GOALKEEPING FM (GK principalmente) ---
+    aerialReach: a('aerialReach'),
+    commandOfArea: a('commandOfArea'),
+    communication: a('communication'),
+    eccentricity: a('eccentricity'),
+    kicking: a('kicking'),
+    oneOnOnes: a('oneOnOnes'),
+    punchingTendency: a('punchingTendency'),
+    rushingOutTendency: a('rushingOutTendency'),
+    throwing: a('throwing'),
   }
 }
 
@@ -163,7 +263,12 @@ export function generatePlayer(rng: Rng, opts: GenPlayerOptions): Player {
     if (sameRole.length > 0) sec.push(rng.pick(sameRole))
   }
 
-  return {
+  // Potential nascosto (Fase 3.A foundation per Fase 3.B):
+  // - Giovane (<23): potential supera l'overall attuale di 5-18 punti → ha margine di crescita
+  // - Picco (24-28): potential ≈ overall attuale ±2 → è al top o quasi
+  // - Veterano (29+): potential = overall storico al picco, ora già in declino
+  // Tutti i player vengono creati con un potential coerente al loro overall corrente.
+  const player: Player = {
     id: generateId(rng),
     firstName,
     lastName,
@@ -179,4 +284,13 @@ export function generatePlayer(rng: Rng, opts: GenPlayerOptions): Player {
     teamId: opts.teamId,
     shirtNumber: opts.shirtNumber ?? null,
   }
+  const currentOvr = calcOverall(player)
+  let growthRoom: number
+  if (ageRoll < 20) growthRoom = rng.int(10, 18)       // giovanissimo, grossa crescita
+  else if (ageRoll < 23) growthRoom = rng.int(5, 12)   // giovane, crescita media
+  else if (ageRoll < 26) growthRoom = rng.int(1, 6)    // pre-picco, lieve
+  else if (ageRoll <= 28) growthRoom = rng.int(0, 2)   // picco, quasi nulla
+  else growthRoom = rng.int(-3, 0)                     // post-picco, potential = peak storico
+  player.potential = clamp(currentOvr + growthRoom + (ageRoll >= 29 ? Math.round((ageRoll - 28) * 1.5) : 0), 30, 99)
+  return player
 }

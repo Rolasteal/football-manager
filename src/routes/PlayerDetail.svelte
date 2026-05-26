@@ -4,6 +4,7 @@
   import AppShell from '$lib/AppShell.svelte'
   import { careerStore } from '$state/career.svelte'
   import { calcOverall } from '$engine/gen/player'
+  import { ensurePlayerFMAttributes } from '$engine/gen/playerCompat'
   import type { Player, Position, PlayerAttributes } from '$engine/types'
 
   interface Props { params?: { id?: string } }
@@ -15,6 +16,13 @@
     career && params?.id ? career.players[params.id] ?? null : null
   )
   let team = $derived(player && player.teamId && career ? career.teams[player.teamId] : null)
+
+  // Backward-compat lazy: popola attributi FM mancanti su save legacy.
+  // Idempotente, side-effect su player.attributes (chiamato in $effect per non
+  // mutare durante il rendering del template).
+  $effect(() => {
+    if (player) ensurePlayerFMAttributes(player)
+  })
 
   onMount(() => { if (!career) push('/') })
 
@@ -57,39 +65,79 @@
   }
 
   interface AttrGroup { label: string; keys: Array<{ key: keyof PlayerAttributes; label: string }> }
+
+  /** Tecnici FM (14 attributi, outfield) — alfabetico italiano */
   const TECH: AttrGroup = {
     label: 'Tecnici',
     keys: [
-      { key: 'passing',   label: 'Passaggio' },
-      { key: 'shooting',  label: 'Tiro' },
-      { key: 'dribbling', label: 'Dribbling' },
-      { key: 'finishing', label: 'Finalizzazione' },
-      { key: 'crossing',  label: 'Cross' },
-      { key: 'tackling',  label: 'Contrasto' },
-      { key: 'heading',   label: 'Colpo di testa' },
+      { key: 'corners',       label: 'Calci d\'angolo' },
+      { key: 'heading',       label: 'Colpo di testa' },
+      { key: 'tackling',      label: 'Contrasto' },
+      { key: 'crossing',      label: 'Cross' },
+      { key: 'dribbling',     label: 'Dribbling' },
+      { key: 'finishing',     label: 'Finalizzazione' },
+      { key: 'marking',       label: 'Marcatura' },
+      { key: 'passing',       label: 'Passaggio' },
+      { key: 'firstTouch',    label: 'Primo controllo' },
+      { key: 'penaltyTaking', label: 'Rigori' },
+      { key: 'longThrows',    label: 'Rimesse lunghe' },
+      { key: 'longShots',     label: 'Tiro da fuori' },
+      { key: 'freeKicks',     label: 'Punizioni' },
+      { key: 'technique',     label: 'Tecnica' },
     ],
   }
-  const PHYS: AttrGroup = {
-    label: 'Fisici',
-    keys: [
-      { key: 'pace',     label: 'Velocità' },
-      { key: 'stamina',  label: 'Resistenza' },
-      { key: 'strength', label: 'Forza' },
-    ],
-  }
-  const MENT: AttrGroup = {
-    label: 'Mentali',
-    keys: [
-      { key: 'vision',    label: 'Visione' },
-      { key: 'composure', label: 'Freddezza' },
-      { key: 'workRate',  label: 'Intensità' },
-    ],
-  }
+
+  /** Goalkeeping FM (11 attributi, GK) — alfabetico italiano */
   const GK_ATTR: AttrGroup = {
     label: 'Portiere',
     keys: [
-      { key: 'reflexes', label: 'Riflessi' },
-      { key: 'handling', label: 'Presa' },
+      { key: 'aerialReach',         label: 'Allungo' },
+      { key: 'commandOfArea',       label: 'Comando area' },
+      { key: 'communication',       label: 'Comunicazione' },
+      { key: 'eccentricity',        label: 'Eccentricità' },
+      { key: 'oneOnOnes',           label: 'Faccia a faccia' },
+      { key: 'reflexes',            label: 'Riflessi' },
+      { key: 'rushingOutTendency',  label: 'Tendenza a uscire' },
+      { key: 'punchingTendency',    label: 'Tendenza a respingere' },
+      { key: 'kicking',             label: 'Tiro (rilancio)' },
+      { key: 'handling',            label: 'Presa' },
+      { key: 'throwing',            label: 'Rilancio mano' },
+    ],
+  }
+
+  /** Mentali FM (14 attributi, shared) — alfabetico italiano */
+  const MENT: AttrGroup = {
+    label: 'Mentali',
+    keys: [
+      { key: 'aggression',     label: 'Aggressività' },
+      { key: 'anticipation',   label: 'Anticipo' },
+      { key: 'concentration',  label: 'Concentrazione' },
+      { key: 'flair',          label: 'Creatività' },
+      { key: 'decisions',      label: 'Decisioni' },
+      { key: 'determination',  label: 'Determinazione' },
+      { key: 'leadership',     label: 'Leadership' },
+      { key: 'offTheBall',     label: 'Movimento senza palla' },
+      { key: 'bravery',        label: 'Coraggio' },
+      { key: 'positioning',    label: 'Posizionamento' },
+      { key: 'composure',      label: 'Freddezza' },
+      { key: 'teamwork',       label: 'Gioco di squadra' },
+      { key: 'vision',         label: 'Visione di gioco' },
+      { key: 'workRate',       label: 'Intensità' },
+    ],
+  }
+
+  /** Fisici FM (8 attributi, shared) — alfabetico italiano */
+  const PHYS: AttrGroup = {
+    label: 'Fisici',
+    keys: [
+      { key: 'acceleration',   label: 'Accelerazione' },
+      { key: 'agility',        label: 'Agilità' },
+      { key: 'balance',        label: 'Equilibrio' },
+      { key: 'strength',       label: 'Forza' },
+      { key: 'jumpingReach',   label: 'Elevazione' },
+      { key: 'naturalFitness', label: 'Forma naturale' },
+      { key: 'stamina',        label: 'Resistenza' },
+      { key: 'pace',           label: 'Velocità' },
     ],
   }
 
@@ -171,12 +219,13 @@
     </header>
 
     <section class="attr-grid">
-      {#each [TECH, PHYS, MENT, ...(player.position === 'GK' ? [GK_ATTR] : [])] as group (group.label)}
+      {#each [(player.position === 'GK' ? GK_ATTR : TECH), MENT, PHYS] as group (group.label)}
         <div class="attr-card card-gold anim-kickin">
           <h3 class="attr-h">{group.label}</h3>
           <ul class="attr-list">
             {#each group.keys as item (item.key)}
-              {@const v = player.attributes[item.key]}
+              {@const raw = player.attributes[item.key]}
+              {@const v = typeof raw === 'number' ? raw : 1}
               <li class="attr-row">
                 <span class="attr-label">{item.label}</span>
                 <div class="bar">
@@ -403,12 +452,12 @@
   /* ===== ATTRIBUTI ===== */
   .attr-grid {
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: repeat(3, 1fr);
     gap: 14px;
     margin-bottom: 18px;
   }
   .attr-card {
-    padding: 18px 22px;
+    padding: 16px 18px;
   }
   .attr-h {
     margin: 0 0 14px 0;
@@ -429,13 +478,13 @@
   }
   .attr-row {
     display: grid;
-    grid-template-columns: 130px 1fr 32px;
+    grid-template-columns: minmax(100px, 1.4fr) minmax(60px, 1fr) 32px;
     align-items: center;
-    gap: 12px;
+    gap: 10px;
   }
   .attr-label {
     color: #d4cfc1;
-    font-size: 13px;
+    font-size: 12.5px;
     font-weight: 500;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -475,6 +524,9 @@
     margin-right: 12px;
   }
 
+  @media (max-width: 1180px) {
+    .attr-grid { grid-template-columns: repeat(2, 1fr); }
+  }
   @media (max-width: 900px) {
     .pd-head { grid-template-columns: auto 1fr; }
     .pd-meta { grid-column: 1 / -1; }
@@ -484,6 +536,6 @@
     .pd-head { grid-template-columns: 1fr; text-align: center; }
     .pd-shirt { margin: 0 auto; }
     .pd-sub, .pd-name { justify-content: center; }
-    .attr-row { grid-template-columns: 100px 1fr 32px; }
+    .attr-row { grid-template-columns: minmax(90px, 1.5fr) minmax(50px, 1fr) 32px; }
   }
 </style>
