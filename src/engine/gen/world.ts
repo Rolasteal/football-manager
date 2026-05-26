@@ -120,6 +120,10 @@ function generateTeam(
   return { team, stadium }
 }
 
+/** Numeri "tradizionali" da portiere — assegnati nell'ordine ai 3 GK
+ *  della rosa (1° GK = 1, 2° GK = 12, 3° GK = 22). Convention italiana. */
+const GK_SHIRTS = [1, 12, 22]
+
 function generateSquad(
   rng: Rng,
   teamId: EntityId,
@@ -127,15 +131,25 @@ function generateSquad(
   seasonYear: number
 ): Player[] {
   const squad: Player[] = []
-  let shirt = 1
+  // I non-portieri pescano dai numeri 2-25 esclusi quelli riservati ai GK.
+  // Risultato: [2..11, 13..21, 23, 24, 25] = 22 numeri esatti per 22 outfield.
+  const outfieldShirts: number[] = []
+  for (let n = 2; n <= 25; n++) {
+    if (!GK_SHIRTS.includes(n)) outfieldShirts.push(n)
+  }
+  let gkIdx = 0
+  let outIdx = 0
   for (const slot of SQUAD_TEMPLATE) {
     for (let i = 0; i < slot.count; i++) {
+      const shirtNumber = slot.position === 'GK'
+        ? GK_SHIRTS[gkIdx++]
+        : outfieldShirts[outIdx++]
       const p = generatePlayer(rng, {
         position: slot.position,
         tier,
         teamId,
         seasonYear,
-        shirtNumber: shirt++,
+        shirtNumber,
       })
       squad.push(p)
     }
