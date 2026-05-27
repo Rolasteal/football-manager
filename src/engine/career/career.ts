@@ -326,6 +326,10 @@ export function buildCareerFromPreview(preview: PreviewWorld, opts: Omit<CreateC
   // Fase 3.G fix-values: marca i marketValue come già calibrati (sono stati
   // generati con la formula corretta in computeInitialMarketValue).
   career.marketValuesV2 = true
+  // Fix giovani v2 (2026-05-27): generatePlayer ora applica youthScaleForAge per
+  // age ≤ 21, quindi i player iniziali sono già scalati correttamente. Marca
+  // come migrato per evitare doppio scaling al primo /youth visit.
+  career.youthRescaledV2 = true
   return career
 }
 

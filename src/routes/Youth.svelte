@@ -6,19 +6,25 @@
   import { calcOverall } from '$engine/gen/player'
   import { fmtMoney } from '$engine/career/finances'
   import { tierFromYouthPotential, type YouthTier } from '$engine/career/youth'
+  import { ensureYouthRescaled } from '$engine/career/aging'
   import type { Player, Position } from '$engine/types'
 
   const store = careerStore()
   let career = $derived(store.career)
   let myTeam = $derived(career ? career.teams[career.club.teamId] : null)
 
-  onMount(() => { if (!career) push('/') })
+  onMount(() => {
+    if (!career) { push('/'); return }
+    // Migration one-shot per save legacy: rescale dei giovani al new factor v2.
+    // Idempotente via marker career.youthRescaledV2.
+    ensureYouthRescaled(career)
+  })
 
   // Filtri
   type Scope = 'mine' | 'all'
   let scope = $state<Scope>('mine')
   let filterClubId = $state<string>('all')
-  let filterPotMin = $state<number>(60)
+  let filterPotMin = $state<number>(40)  // default basso → mostra TUTTE le 5 fasce
   let filterAgeMax = $state<number>(21)
 
   function playerAge(p: Player): number {

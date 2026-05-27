@@ -24,7 +24,7 @@ import type { Player, PlayerAttributes, Position } from '$engine/types'
 import type { Rng } from '$engine/gen/rng'
 import type { Career } from './types'
 import { createRng } from '$engine/gen/rng'
-import { calcOverall } from '$engine/gen/player'
+import { calcOverall, youthScaleForAge } from '$engine/gen/player'
 import { ensurePlayerFMAttributes } from '$engine/gen/playerCompat'
 
 /** Ruolo macro per pool attributi crescita/declino */
@@ -308,6 +308,44 @@ export function recalculateMarketValue(player: Player, refYear?: number): number
   const value = Math.round(raw / 100_000) * 100_000
   player.marketValue = value
   return value
+}
+
+/**
+ * Migration one-shot per save creati prima del fix giovani v2 (2026-05-27).
+ *
+ * Identifica tutti i player ≤ 21 anni che probabilmente sono ancora "al peak"
+ * (attributi non scalati per età) e applica `youthScaleForAge` per portarli al
+ * livello current=factor×peak coerente con la nuova formula.
+ *
+ * Strategia: assume che attributi pre-fix fossero ~peak (factor 1.0) e applica
+ * direttamente lo scaleFactor target. Per youth già scalati con vecchia formula
+ * 0.65-0.86 (commit precedente), questo li scala ulteriormente — ma è OK perché
+ * la nuova formula è più aggressiva (0.45-0.90).
+ *
+ * Determinismo: rng dedicato `seed ^ playerId ^ 0xC04708`.
+ *
+ * Marker `career.youthRescaledV2 = true` per idempotenza.
+ */
+export function ensureYouthRescaled(career: Career): void {
+  if (career.youthRescaledV2) return
+  const refYear = career.season.year
+  for (const p of Object.values(career.players)) {
+    const age = ageFromBirthDate(p.birthDate, refYear)
+    if (age > 21 || age < 14) continue
+    ensurePlayerFMAttributes(p)
+    const rng = createRng((career.seed ^ p.id.charCodeAt(0) ^ p.id.charCodeAt(1) ^ 0xC04708) >>> 0)
+    const factor = youthScaleForAge(age, rng)
+    const a = p.attributes as unknown as Record<string, number | undefined>
+    for (const key of Object.keys(a)) {
+      const v = a[key]
+      if (typeof v !== 'number') continue
+      a[key] = Math.max(1, Math.min(20, Math.round(v * factor)))
+    }
+    // Ricalcola valore mercato sul nuovo (più basso) overall
+    recalculateMarketValue(p, refYear)
+  }
+  career.youthRescaledV2 = true
+  career.updatedAt = Date.now()
 }
 
 /**

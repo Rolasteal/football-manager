@@ -244,6 +244,15 @@ export function generatePlayer(rng: Rng, opts: GenPlayerOptions): Player {
   // Distribuzione età realistica (mediana ~25, peak 22-28)
   const ageRoll = clamp(Math.round(rng.gauss(25, 4.5)), 17, 37)
   const attrs = generateAttributes(rng, opts.position, opts.tier)
+
+  // Fix giovani v2 (2026-05-27): se age ≤ 21 il giocatore è ancora sotto-sviluppato,
+  // applica scaling per età coerente con generateYouthPlayer (youth.ts).
+  // Stessa curva: 17=0.50, 18=0.60, 19=0.70, 20=0.80, 21=0.88 ± jitter 0.05.
+  // 22+ resta a peak (1.0). Aging Fase 3.B porta gli scalati al picco a 24-28.
+  if (ageRoll <= 21) {
+    applyYouthAgeScaling(attrs, ageRoll, rng)
+  }
+
   // marketValue iniziale: PLACEHOLDER. Il valore finale viene calcolato sotto
   // dopo aver creato il Player, via recalculateMarketValue (formula unificata
   // Serie A 2024 in `$engine/career/aging.ts`). Fase 3.G fix-values.
@@ -279,12 +288,18 @@ export function generatePlayer(rng: Rng, opts: GenPlayerOptions): Player {
     teamId: opts.teamId,
     shirtNumber: opts.shirtNumber ?? null,
   }
+  // Potential: deve dare margine di crescita coerente con scaling per età.
+  // Fix v2 (2026-05-27): per giovani sub-21 (ora con attributi scalati 0.50-0.90),
+  // growthRoom è MOLTO maggiore per compensare il currentOvr basso.
+  // Esempio: 17enne scalato → currentOvr ~45-50 → growthRoom 15-35 → pot 60-85
+  // (distribuzione realistica: la maggioranza 60-70 normali, pochi 80+ ottimi).
   const currentOvr = calcOverall(player)
   let growthRoom: number
-  if (ageRoll < 20) growthRoom = rng.int(10, 18)       // giovanissimo, grossa crescita
-  else if (ageRoll < 23) growthRoom = rng.int(5, 12)   // giovane, crescita media
-  else if (ageRoll < 26) growthRoom = rng.int(1, 6)    // pre-picco, lieve
-  else if (ageRoll <= 28) growthRoom = rng.int(0, 2)   // picco, quasi nulla
+  if (ageRoll <= 17) growthRoom = rng.int(15, 38)      // 16-17: enorme crescita possibile
+  else if (ageRoll <= 19) growthRoom = rng.int(12, 32) // 18-19: grossa crescita
+  else if (ageRoll <= 21) growthRoom = rng.int(8, 22)  // 20-21: crescita media
+  else if (ageRoll < 24) growthRoom = rng.int(3, 10)   // 22-23: pre-picco, lieve
+  else if (ageRoll <= 28) growthRoom = rng.int(0, 3)   // picco, quasi nulla
   else growthRoom = rng.int(-3, 0)                     // post-picco, potential = peak storico
   player.potential = clamp(currentOvr + growthRoom + (ageRoll >= 29 ? Math.round((ageRoll - 28) * 1.5) : 0), 30, 99)
 
@@ -293,6 +308,41 @@ export function generatePlayer(rng: Rng, opts: GenPlayerOptions): Player {
   // Stessa formula di `recalculateMarketValue` in career/aging.ts.
   player.marketValue = computeInitialMarketValue(player, opts.seasonYear)
   return player
+}
+
+/**
+ * Curva di scaling attributi per giovani 17-21 (fix v2 2026-05-27).
+ * Un 17enne parte con attributi al 50% del peak teorico, un 21enne al 88%.
+ * Aging Fase 3.B li porterà al picco a 24-28 anni.
+ *
+ * Esportata anche per la migration `ensureYouthRescaled` in aging.ts.
+ */
+export function youthScaleForAge(age: number, rng: Rng): number {
+  const base =
+    age <= 16 ? 0.45 :
+    age === 17 ? 0.55 :
+    age === 18 ? 0.65 :
+    age === 19 ? 0.75 :
+    age === 20 ? 0.84 :
+    age === 21 ? 0.90 :
+    1.0
+  const jitter = (rng.next() - 0.5) * 0.10  // ±0.05
+  return Math.max(0.30, Math.min(1.0, base + jitter))
+}
+
+/**
+ * Scala in-place gli attributi del player (1-20) per simulare under-development
+ * giovanile. factor < 1 abbassa. Usata da generatePlayer (regolare) e dalla
+ * migration ensureYouthRescaled (save legacy).
+ */
+function applyYouthAgeScaling(attrs: PlayerAttributes, age: number, rng: Rng): void {
+  const factor = youthScaleForAge(age, rng)
+  const a = attrs as unknown as Record<string, number | undefined>
+  for (const key of Object.keys(a)) {
+    const v = a[key]
+    if (typeof v !== 'number') continue
+    a[key] = Math.max(1, Math.min(20, Math.round(v * factor)))
+  }
 }
 
 /**

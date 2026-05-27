@@ -214,4 +214,11 @@ export interface Career {
    * Fase 3.G fix-values.
    */
   marketValuesV2?: boolean
+
+  /**
+   * Flag migration one-shot: i player ≤ 21 anni sono stati riscalati con la curva
+   * giovani v2 (factor 0.45-0.90 per età). Setato da `ensureYouthRescaled`.
+   * Fix giovani 2026-05-27.
+   */
+  youthRescaledV2?: boolean
 }
