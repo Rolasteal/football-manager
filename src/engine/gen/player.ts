@@ -243,12 +243,30 @@ export function generatePlayer(rng: Rng, opts: GenPlayerOptions): Player {
   const { firstName, lastName } = randomFullName(rng)
   // Distribuzione età realistica (mediana ~25, peak 22-28)
   const ageRoll = clamp(Math.round(rng.gauss(25, 4.5)), 17, 37)
-  const attrs = generateAttributes(rng, opts.position, opts.tier)
 
-  // Fix giovani v2 (2026-05-27): se age ≤ 21 il giocatore è ancora sotto-sviluppato,
-  // applica scaling per età coerente con generateYouthPlayer (youth.ts).
-  // Stessa curva: 17=0.50, 18=0.60, 19=0.70, 20=0.80, 21=0.88 ± jitter 0.05.
-  // 22+ resta a peak (1.0). Aging Fase 3.B porta gli scalati al picco a 24-28.
+  // Fix giovani v4 (2026-05-27): per ageRoll ≤ 21, il TIER degli attributi
+  // deriva dal POTENTIAL rollato, non dal tier del club. Un 19enne "scarso"
+  // futuro ha attributi low (≈ 8.5) anche se è nel club top; un 19enne
+  // "ottimo" (Yamal style) ha attributi top anche se è in un club low.
+  // Questo è l'unico modo per ottenere la distribuzione realistica 5 fasce
+  // SENZA che i giovani in club top siano TUTTI ottimi solo perché partono
+  // con OVR già alto.
+  // Veterani 22+: tier del club resta (sono già "fatti", il livello rispecchia
+  // dove giocano).
+  let youthTargetPotential: number | null = null
+  let effectiveTier: TeamTier = opts.tier
+  if (ageRoll <= 21) {
+    youthTargetPotential = rollYouthPotentialAbs(rng)
+    if (youthTargetPotential >= 72) effectiveTier = 'top'
+    else if (youthTargetPotential >= 56) effectiveTier = 'mid'
+    else effectiveTier = 'low'
+  }
+
+  const attrs = generateAttributes(rng, opts.position, effectiveTier)
+
+  // Scaling per età (under-developed): un 17enne parte al 55% del peak del
+  // suo tier effettivo, un 21enne all'88%. Aging Fase 3.B li porta al picco
+  // a 24-28 anni.
   if (ageRoll <= 21) {
     applyYouthAgeScaling(attrs, ageRoll, rng)
   }
@@ -267,11 +285,6 @@ export function generatePlayer(rng: Rng, opts: GenPlayerOptions): Player {
     if (sameRole.length > 0) sec.push(rng.pick(sameRole))
   }
 
-  // Potential nascosto (Fase 3.A foundation per Fase 3.B):
-  // - Giovane (<23): potential supera l'overall attuale di 5-18 punti → ha margine di crescita
-  // - Picco (24-28): potential ≈ overall attuale ±2 → è al top o quasi
-  // - Veterano (29+): potential = overall storico al picco, ora già in declino
-  // Tutti i player vengono creati con un potential coerente al loro overall corrente.
   const player: Player = {
     id: generateId(rng),
     firstName,
@@ -288,21 +301,22 @@ export function generatePlayer(rng: Rng, opts: GenPlayerOptions): Player {
     teamId: opts.teamId,
     shirtNumber: opts.shirtNumber ?? null,
   }
-  // Potential: distribuito su 5 fasce realistiche per giovani ≤ 21, coerente
-  // con `rollYouthPotential` di youth.ts. Fix v3 (2026-05-27): prima il
-  // growthRoom era uniforme (15-38 per 16-17, 8-22 per 20-21) → TUTTI i
-  // giovani finivano ottimo/buono (gap medio +22). Ora la distribuzione segue
-  // 1% ottimo / 4% buono / 15% normale / 30% medio / 50% scarso, calibrata
-  // per età (più giovane = più growthRoom dentro ogni fascia).
-  // Veterani 22+: invariato (potential ≈ overall ± piccolo delta).
+
+  // Potential finale:
+  // - Giovani ≤21: usa il targetPotential rollato. Floor di sicurezza =
+  //   currentOvr + minGrowth (almeno qualche punto di crescita per età).
+  // - Veterani 22+: invariato, growthRoom piccolo.
   const currentOvr = calcOverall(player)
-  let growthRoom: number
-  if (ageRoll <= 21) {
-    growthRoom = rollYouthGrowthRoom(rng, ageRoll)
-  } else if (ageRoll < 24) growthRoom = rng.int(3, 10)   // 22-23: pre-picco, lieve
-  else if (ageRoll <= 28) growthRoom = rng.int(0, 3)     // picco, quasi nulla
-  else growthRoom = rng.int(-3, 0)                       // post-picco, potential = peak storico
-  player.potential = clamp(currentOvr + growthRoom + (ageRoll >= 29 ? Math.round((ageRoll - 28) * 1.5) : 0), 30, 99)
+  if (youthTargetPotential !== null) {
+    const minGrowth = ageRoll <= 17 ? 5 : ageRoll <= 19 ? 3 : 1
+    player.potential = clamp(Math.max(youthTargetPotential, currentOvr + minGrowth), 30, 99)
+  } else {
+    let growthRoom: number
+    if (ageRoll < 24) growthRoom = rng.int(3, 10)
+    else if (ageRoll <= 28) growthRoom = rng.int(0, 3)
+    else growthRoom = rng.int(-3, 0)
+    player.potential = clamp(currentOvr + growthRoom + (ageRoll >= 29 ? Math.round((ageRoll - 28) * 1.5) : 0), 30, 99)
+  }
 
   // Fase 3.G fix-values: marketValue calibrato Serie A 2024 via formula unificata.
   // Inline qui per evitare import circolare (aging.ts dipende da player.ts).
@@ -312,41 +326,19 @@ export function generatePlayer(rng: Rng, opts: GenPlayerOptions): Player {
 }
 
 /**
- * Distribuisce il growthRoom (= potential - currentOvr) di un giovane ≤21 anni
- * secondo 5 fasce realistiche (coerenti con `rollYouthPotential` di youth.ts):
- * - **Ottimo** (1%):  crack generazionale (Yamal/Endrick), gap enorme
- * - **Buono** (4%):   top player futuro
- * - **Normale** (15%): titolare medio/buono
- * - **Medio** (30%):  riserva Serie A
- * - **Scarso** (50%): non sfondano oltre il livello attuale
- *
- * Calibrato per età: i più giovani hanno più margine in ogni fascia.
- *
- * Esportata per la migration `ensureYouthPotentialV3` in aging.ts.
+ * Distribuisce il potential ASSOLUTO di un giovane su 5 fasce realistiche.
+ * Duplicato di `rollYouthPotential` in `$engine/career/youth.ts` per evitare
+ * l'import circolare (youth.ts importa generatePlayer da qui). Esportato per
+ * la migration `ensureYouthRebuiltV4` in aging.ts.
+ * TODO: unificare in un modulo `$engine/gen/youthBase.ts`.
  */
-export function rollYouthGrowthRoom(rng: Rng, age: number): number {
+export function rollYouthPotentialAbs(rng: Rng): number {
   const r = rng.next()
-  // Range per (fascia × età): più giovane = più margine.
-  if (age <= 17) {
-    if (r < 0.01) return rng.int(25, 35)  // ottimo
-    if (r < 0.05) return rng.int(15, 22)  // buono
-    if (r < 0.20) return rng.int(8, 13)   // normale
-    if (r < 0.50) return rng.int(3, 7)    // medio
-    return rng.int(0, 3)                  // scarso
-  }
-  if (age <= 19) {
-    if (r < 0.01) return rng.int(20, 28)
-    if (r < 0.05) return rng.int(12, 18)
-    if (r < 0.20) return rng.int(6, 10)
-    if (r < 0.50) return rng.int(2, 5)
-    return rng.int(0, 2)
-  }
-  // age 20-21
-  if (r < 0.01) return rng.int(15, 22)
-  if (r < 0.05) return rng.int(8, 13)
-  if (r < 0.20) return rng.int(4, 7)
-  if (r < 0.50) return rng.int(1, 3)
-  return rng.int(0, 1)
+  if (r < 0.01) return rng.int(80, 95)  //  1% ottimi (fenomeni)
+  if (r < 0.05) return rng.int(70, 79)  //  4% buoni
+  if (r < 0.20) return rng.int(60, 69)  // 15% normali
+  if (r < 0.50) return rng.int(50, 59)  // 30% medi
+  return rng.int(30, 49)                 // 50% scarsi
 }
 
 /**
@@ -372,9 +364,9 @@ export function youthScaleForAge(age: number, rng: Rng): number {
 /**
  * Scala in-place gli attributi del player (1-20) per simulare under-development
  * giovanile. factor < 1 abbassa. Usata da generatePlayer (regolare) e dalla
- * migration ensureYouthRescaled (save legacy).
+ * migration ensureYouthRebuiltV4 (save legacy).
  */
-function applyYouthAgeScaling(attrs: PlayerAttributes, age: number, rng: Rng): void {
+export function applyYouthAgeScaling(attrs: PlayerAttributes, age: number, rng: Rng): void {
   const factor = youthScaleForAge(age, rng)
   const a = attrs as unknown as Record<string, number | undefined>
   for (const key of Object.keys(a)) {

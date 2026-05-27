@@ -24,7 +24,14 @@ import type { Player, PlayerAttributes, Position } from '$engine/types'
 import type { Rng } from '$engine/gen/rng'
 import type { Career } from './types'
 import { createRng } from '$engine/gen/rng'
-import { calcOverall, youthScaleForAge, rollYouthGrowthRoom } from '$engine/gen/player'
+import {
+  calcOverall,
+  youthScaleForAge,
+  rollYouthPotentialAbs,
+  applyYouthAgeScaling,
+  generateAttributes,
+  type TeamTier,
+} from '$engine/gen/player'
 import { ensurePlayerFMAttributes } from '$engine/gen/playerCompat'
 
 /** Ruolo macro per pool attributi crescita/declino */
@@ -349,38 +356,53 @@ export function ensureYouthRescaled(career: Career): void {
 }
 
 /**
- * Migration one-shot per save creati prima del fix giovani v3 (2026-05-27).
+ * Migration one-shot per save creati prima del fix giovani v4 (2026-05-27).
  *
- * BUG fixato: `generatePlayer` calcolava `potential = currentOvr + growthRoom`
- * uniforme (15-38 per 16-17enni, 8-22 per 20-21enni) → TUTTI i giovani nel save
- * iniziale finivano potential 80+ (ottimo). La nuova `rollYouthGrowthRoom` lo
- * distribuisce su 5 fasce probabilistiche (1% ottimo / 4% buono / 15% normale /
- * 30% medio / 50% scarso).
+ * BUG fixato: prima il `tier` degli attributi dei giovani derivava dal CLUB
+ * (top/mid/low), non dal POTENTIAL futuro. Risultato: tutti i giovani in club
+ * top partivano con OVR 70+ → potential ≥ 80 (ottimo) per qualsiasi
+ * growthRoom positivo. La v3 (potential probabilistico) non bastava perché
+ * il floor era currentOvr.
  *
- * La migration ricalcola SOLO `player.potential` per i 14-21 anni: ricalcola
- * l'overall corrente con la nuova formula e somma un growthRoom rollato dalla
- * distribuzione. Non tocca `attributes` (già scalati da ensureYouthRescaled v2).
+ * Strategia v4 (rebuild completo dei giovani esistenti):
+ * 1. Rolla nuovo `targetPotential` su 5 fasce assolute (1/4/15/30/50%)
+ * 2. Deriva il tier dagli attributi dal potential (top ≥72, mid ≥56, low <56)
+ * 3. Rigenera `player.attributes` con quel tier + bias ruolo
+ * 4. Applica scaling per età (under-developed)
+ * 5. Setta potential con floor minimo di crescita
+ * 6. Ricalcola marketValue
  *
- * Determinismo: rng dedicato `seed ^ playerId ^ 0xC04709`.
- * Marker `career.youthPotentialV3 = true` per idempotenza.
+ * NB: gli attributi dei giovani esistenti VENGONO SOSTITUITI. È invasivo ma
+ * necessario per ottenere la distribuzione 5 fasce realistica nei save legacy.
+ *
+ * Determinismo: rng dedicato `seed ^ playerId ^ 0xC0470A`.
+ * Marker `career.youthRebuiltV4 = true` per idempotenza.
  */
-export function ensureYouthPotentialV3(career: Career): void {
-  if (career.youthPotentialV3) return
+export function ensureYouthRebuiltV4(career: Career): void {
+  if (career.youthRebuiltV4) return
   const refYear = career.season.year
   for (const p of Object.values(career.players)) {
     const age = ageFromBirthDate(p.birthDate, refYear)
     if (age > 21 || age < 14) continue
-    ensurePlayerFMAttributes(p)
-    const rng = createRng((career.seed ^ p.id.charCodeAt(0) ^ p.id.charCodeAt(1) ^ 0xC04709) >>> 0)
-    const currentOvr = calcOverall(p)
-    // Per età <16 (caso teorico, future-proof) usiamo la curva dei 16enni
+    const rng = createRng((career.seed ^ p.id.charCodeAt(0) ^ p.id.charCodeAt(1) ^ 0xC0470A) >>> 0)
+    // 1. Rolla potential assoluto con distribuzione 5 fasce
+    const targetPot = rollYouthPotentialAbs(rng)
+    // 2. Tier derivato dal potential (non dal club)
+    const tier: TeamTier = targetPot >= 72 ? 'top' : targetPot >= 56 ? 'mid' : 'low'
+    // 3. Rigenera attributi
+    p.attributes = generateAttributes(rng, p.position, tier)
+    // 4. Scaling per età
     const effAge = Math.max(16, age)
-    const growthRoom = rollYouthGrowthRoom(rng, effAge)
-    p.potential = Math.max(30, Math.min(99, currentOvr + growthRoom))
-    // Ricalcola marketValue: il potBonus dipende dal gap potential-overall
+    applyYouthAgeScaling(p.attributes, effAge, rng)
+    ensurePlayerFMAttributes(p)
+    // 5. Setta potential con floor (almeno un po' di crescita rimane)
+    const currentOvr = calcOverall(p)
+    const minGrowth = effAge <= 17 ? 5 : effAge <= 19 ? 3 : 1
+    p.potential = Math.max(30, Math.min(99, Math.max(targetPot, currentOvr + minGrowth)))
+    // 6. Ricalcola marketValue
     recalculateMarketValue(p, refYear)
   }
-  career.youthPotentialV3 = true
+  career.youthRebuiltV4 = true
   career.updatedAt = Date.now()
 }
 

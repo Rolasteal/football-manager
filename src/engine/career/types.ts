@@ -260,11 +260,16 @@ export interface Career {
   youthRescaledV2?: boolean
 
   /**
-   * Flag migration one-shot: il `potential` dei player ≤ 21 anni è stato
-   * ricalcolato con la distribuzione probabilistica 5 fasce (1% ottimo / 4%
-   * buono / 15% normale / 30% medio / 50% scarso) invece del growthRoom
-   * uniforme buggato. Setato da `ensureYouthPotentialV3`. Fix giovani v3
-   * 2026-05-27.
+   * @deprecated Sostituito da `youthRebuiltV4`. Lasciato per non rompere i
+   * save che già lo avevano impostato (campo letto da nessuno ormai).
    */
   youthPotentialV3?: boolean
+
+  /**
+   * Flag migration one-shot v4: per i player ≤ 21 anni sono stati rigenerati
+   * attributi (tier derivato dal potential, non dal club) e potential
+   * (distribuzione 5 fasce assolute). Setato da `ensureYouthRebuiltV4`.
+   * Fix giovani v4 2026-05-27.
+   */
+  youthRebuiltV4?: boolean
 }
