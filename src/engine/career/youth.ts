@@ -1,22 +1,23 @@
 /**
- * Generazione giovani annuale — Fase 3.C.
+ * Generazione giovani annuale — Fase 3.C (ricalibrato 3.G.3+).
  *
  * Ogni inizio stagione, ogni club promuove 2-5 giovani 16-19 anni dal vivaio.
- * La distribuzione del potential è realistica:
- * - 1% fenomeni (pot 80-88) — 1 ogni ~100 giovani, generazionale (Yamal, Endrick)
- * - 4% molto promettenti (pot 70-79) — top player futuro
- * - 15% buoni (pot 60-69) — titolare buona squadra
- * - 35% medi (pot 50-59) — riserva Serie A, titolare Serie B
- * - 45% mediocri/scarsi (pot 35-49) — mai sfondano oltre dilettanti
+ * 5 fasce realistiche di potential, dalla maggioranza scarsi al rarissimo crack:
+ * - **Ottimi** (pot 80-95): 1% — fenomeni generazionali (Yamal/Endrick), 1 ogni ~100
+ * - **Buoni** (pot 70-79): 4% — top player futuro
+ * - **Normali** (pot 60-69): 15% — titolare medio/buono
+ * - **Medi** (pot 50-59): 30% — riserva Serie A, titolare Serie B
+ * - **Scarsi** (pot 30-49): 50% — mai sfondano oltre dilettanti
  *
  * Numero giovani per club basato su reputation:
  * - Top club (rep 70+): 4-5 / stagione
  * - Medi (rep 50-69): 3-4
  * - Piccoli (rep <50): 2-3
  *
- * Il current overall è scalato dall'età: 16enne ha attributi ~65% del peak,
- * 19enne ~86%. La curva aging (Fase 3.B) li porterà al potential nei prossimi
- * 4-8 anni.
+ * Il **current overall** è MOLTO sotto il peak (giovani = ancora verdi):
+ * scaleFactor 0.40-0.75 con jitter ±0.05. Un 16enne con pot 80 parte a
+ * ovr ~40-45, un 19enne con pot 70 a ~55. La curva aging (Fase 3.B) li
+ * porterà al potential nei 4-8 anni successivi.
  */
 
 import type { Player, Position, Team } from '$engine/types'
@@ -29,17 +30,39 @@ import { initContract } from './contracts'
 // ====== Distribuzione potential ======
 
 /**
- * Rolla un potential 30-88 secondo la distribuzione realistica. Deterministic
+ * Categoria nominale del giovane in base al potential. Usata anche dalla UI
+ * (badge colorato) per essere visivamente chiara su quanto un giovane è
+ * promettente.
+ */
+export type YouthTier = 'scarso' | 'medio' | 'normale' | 'buono' | 'ottimo'
+
+export function tierFromYouthPotential(pot: number): YouthTier {
+  if (pot >= 80) return 'ottimo'
+  if (pot >= 70) return 'buono'
+  if (pot >= 60) return 'normale'
+  if (pot >= 50) return 'medio'
+  return 'scarso'
+}
+
+/**
+ * Rolla un potential 30-95 secondo la distribuzione realistica. Deterministic
  * dato l'rng. Il risultato è un overall MASSIMO che il giovane potrà raggiungere
  * — non l'attuale.
+ *
+ * Distribuzione su 5 fasce nominali (vedi YouthTier):
+ *   ottimi  (80-95): 1%   (fenomeno generazionale, range esteso fino a 95)
+ *   buoni   (70-79): 4%
+ *   normali (60-69): 15%
+ *   medi    (50-59): 30%
+ *   scarsi  (30-49): 50%
  */
 export function rollYouthPotential(rng: Rng): number {
   const r = rng.next()
-  if (r < 0.01) return rng.int(80, 88)        //  1% fenomeni
-  if (r < 0.05) return rng.int(70, 79)        //  4% molto promettenti
-  if (r < 0.20) return rng.int(60, 69)        // 15% buoni
-  if (r < 0.55) return rng.int(50, 59)        // 35% medi
-  return rng.int(30, 49)                       // 45% scarsi
+  if (r < 0.01) return rng.int(80, 95)        //  1% ottimi (fenomeni, range esteso)
+  if (r < 0.05) return rng.int(70, 79)        //  4% buoni
+  if (r < 0.20) return rng.int(60, 69)        // 15% normali
+  if (r < 0.50) return rng.int(50, 59)        // 30% medi
+  return rng.int(30, 49)                       // 50% scarsi
 }
 
 /** Rolla età 16-19 con peso: più probabile 16-17 (giovani dal vivaio "fresco"). */
@@ -147,9 +170,18 @@ export function generateYouthPlayer(
   // Override potential con il roll giovane
   player.potential = potential
 
-  // Scala attributi: 16=0.65, 17=0.72, 18=0.79, 19=0.86
-  // Crescita aging li riporterà al peak entro 24-26 anni
-  const scaleFactor = 0.65 + (age - 16) * 0.07
+  // Scaling attributi MOLTO aggressivo: i giovani partono VERAMENTE verdi.
+  // Range base per età: 16=0.40, 17=0.50, 18=0.60, 19=0.70
+  // + jitter ±0.05 random per varietà (alcuni precoci, altri tardivi)
+  // La curva aging Fase 3.B li porterà al potential in 4-8 anni.
+  //
+  // Esempi (su attributi base ~14 di tier top):
+  //   16enne factor 0.40 → attr ~5.6 → calcOverall ~50 — scarsino visivo
+  //   18enne factor 0.60 → attr ~8.4 → calcOverall ~59 — accettabile
+  //   19enne factor 0.70 → attr ~9.8 → calcOverall ~64 — quasi titolare
+  const baseScale = 0.40 + (age - 16) * 0.10
+  const jitter = (rng.next() - 0.5) * 0.10   // ±0.05
+  const scaleFactor = Math.max(0.30, Math.min(0.80, baseScale + jitter))
   scaleAttributes(player, scaleFactor)
 
   // Backward-compat: assicura attributi FM popolati

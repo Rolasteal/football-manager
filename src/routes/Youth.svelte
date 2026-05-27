@@ -5,6 +5,7 @@
   import { careerStore, persistActiveCareer } from '$state/career.svelte'
   import { calcOverall } from '$engine/gen/player'
   import { fmtMoney } from '$engine/career/finances'
+  import { tierFromYouthPotential, type YouthTier } from '$engine/career/youth'
   import type { Player, Position } from '$engine/types'
 
   const store = careerStore()
@@ -64,12 +65,18 @@
     const pot = p.potential ?? calcOverall(p)
     return String(pot)
   }
+  /** Classe CSS dal tier nominale (scarso/medio/normale/buono/ottimo) */
   function potClass(pot: number): string {
-    if (pot >= 85) return 'pot-crack'
-    if (pot >= 75) return 'pot-top'
-    if (pot >= 65) return 'pot-good'
-    if (pot >= 55) return 'pot-mid'
-    return 'pot-low'
+    const tier = tierFromYouthPotential(pot)
+    return `pot-${tier}`
+  }
+  /** Label leggibile italiana */
+  function tierLabel(tier: YouthTier): string {
+    if (tier === 'ottimo')   return 'Ottimo'
+    if (tier === 'buono')    return 'Buono'
+    if (tier === 'normale')  return 'Normale'
+    if (tier === 'medio')    return 'Medio'
+    return 'Scarso'
   }
   function ovColor(ov: number): string {
     if (ov >= 80) return 'ov-elite'
@@ -212,7 +219,12 @@
             </button>
             <span class="c-age">{playerAge(p)}</span>
             <span class="c-ov"><span class="ov-badge {ovColor(ovr)}">{ovr}</span></span>
-            <span class="c-pot"><span class="pot-badge {potClass(pot)}">{pot}</span></span>
+            <span class="c-pot">
+              <span class="pot-badge {potClass(pot)}" title={tierLabel(tierFromYouthPotential(pot))}>
+                {pot}
+              </span>
+              <span class="pot-tier-label {potClass(pot)}">{tierLabel(tierFromYouthPotential(pot))}</span>
+            </span>
             <span class="c-club">
               {#if team}
                 <span class="crest small" style="--c1: {team.primaryColor}; --c2: {team.secondaryColor};">{team.shortName}</span>
@@ -246,9 +258,14 @@
 
     <section class="info-note">
       <p>
-        I <strong>giovani</strong> entrano nel vivaio a ogni inizio stagione (Fase 3.C). Reputazione club + jitter determinano
-        quanti se ne aggiungono (2-5 per squadra). I prospect con <strong>potential ≥ 80</strong> sono crack rari (~1% dei nuovi),
-        possono diventare crack assoluti se gestiti bene.
+        I <strong>giovani</strong> entrano nel vivaio a ogni inizio stagione (Fase 3.C). Reputazione club determina
+        quanti se ne aggiungono (2-5 per squadra). 5 fasce di potential:
+        <strong class="pot-tier-label pot-scarso">Scarso</strong> 30-49 (50%),
+        <strong class="pot-tier-label pot-medio">Medio</strong> 50-59 (30%),
+        <strong class="pot-tier-label pot-normale">Normale</strong> 60-69 (15%),
+        <strong class="pot-tier-label pot-buono">Buono</strong> 70-79 (4%),
+        <strong class="pot-tier-label pot-ottimo">Ottimo</strong> 80-95 (1% — crack generazionale).
+        Partono con OVR <strong>molto basso</strong> (16enni ~40-50), crescono col tempo verso il loro potential.
       </p>
       <p>
         <strong>Promuovi</strong> li aggiunge alla tua panchina (max 7 slot). Da lì compaiono nei convocati e possono entrare
@@ -480,11 +497,29 @@
   .ov-mid   { background: rgba(148, 163, 184, 0.18); color: #cbd5e1; border: 1px solid rgba(148, 163, 184, 0.35); }
   .ov-low   { background: rgba(220, 38, 38, 0.16); color: #fca5a5; border: 1px solid rgba(220, 38, 38, 0.35); }
 
-  .pot-crack { background: linear-gradient(180deg, #f0abfc, #a21caf); color: #fff; border: 1px solid rgba(232, 121, 249, 0.5); }
-  .pot-top   { background: rgba(168, 85, 247, 0.22); color: #d8b4fe; border: 1px solid rgba(168, 85, 247, 0.45); }
-  .pot-good  { background: rgba(34, 197, 94, 0.18); color: #86efac; border: 1px solid rgba(34, 197, 94, 0.4); }
-  .pot-mid   { background: rgba(148, 163, 184, 0.16); color: #cbd5e1; border: 1px solid rgba(148, 163, 184, 0.3); }
-  .pot-low   { background: rgba(120, 113, 108, 0.16); color: #a8a29e; border: 1px solid rgba(120, 113, 108, 0.3); }
+  /* 5 fasce ufficiali (scarso/medio/normale/buono/ottimo) */
+  .pot-ottimo  { background: linear-gradient(180deg, #f0abfc, #a21caf); color: #fff; border: 1px solid rgba(232, 121, 249, 0.5); }
+  .pot-buono   { background: rgba(168, 85, 247, 0.22); color: #d8b4fe; border: 1px solid rgba(168, 85, 247, 0.45); }
+  .pot-normale { background: rgba(34, 197, 94, 0.18); color: #86efac; border: 1px solid rgba(34, 197, 94, 0.4); }
+  .pot-medio   { background: rgba(252, 211, 77, 0.16); color: #fde68a; border: 1px solid rgba(252, 211, 77, 0.35); }
+  .pot-scarso  { background: rgba(120, 113, 108, 0.18); color: #a8a29e; border: 1px solid rgba(120, 113, 108, 0.3); }
+
+  .c-pot {
+    display: flex; flex-direction: column; gap: 2px; align-items: flex-start;
+  }
+  .pot-tier-label {
+    font-size: 9.5px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    padding: 0 4px;
+    border-radius: 3px;
+  }
+  .pot-tier-label.pot-ottimo  { color: #f0abfc; }
+  .pot-tier-label.pot-buono   { color: #d8b4fe; }
+  .pot-tier-label.pot-normale { color: #86efac; }
+  .pot-tier-label.pot-medio   { color: #fde68a; }
+  .pot-tier-label.pot-scarso  { color: #a8a29e; }
 
   .c-club { display: flex; align-items: center; gap: 8px; min-width: 0; }
   .crest {
