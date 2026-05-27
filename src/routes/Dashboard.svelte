@@ -6,6 +6,7 @@
   import { computeStandings } from '$engine/competition/standings'
   import { calcOverall } from '$engine/gen/player'
   import { ensureClubFinances, fmtMoney, cashTrend, cashTrendPct } from '$engine/career/finances'
+  import { ensureManagerAccount, managerCashTrendPct } from '$engine/career/manager'
   import { startNewSeason } from '$engine/career/startNewSeason'
   import type { Fixture } from '$engine/competition/types'
 
@@ -67,6 +68,10 @@
   let finances = $derived(career ? ensureClubFinances(career) : null)
   let trend = $derived(finances ? cashTrend(finances, 4) : [])
   let trendPct = $derived(finances ? cashTrendPct(finances, 4) : 0)
+
+  // Conto Manager (Fase 4.A) — ensureManagerAccount popola lazy per save legacy
+  let managerAccount = $derived(career ? ensureManagerAccount(career) : null)
+  let managerTrendPct = $derived(managerAccount ? managerCashTrendPct(managerAccount, 4) : 0)
 
   let advancing = $state(false)
   let startingNewSeason = $state(false)
@@ -227,6 +232,36 @@
             <div class="fin-row">
               <span class="fin-row-l">Mercato</span>
               <span class="fin-row-v">{fmtMoney(finances.transferBudget)}</span>
+            </div>
+          </div>
+        </section>
+      {/if}
+
+      <!-- Conto Manager (Fase 4.A) -->
+      {#if managerAccount && career}
+        <section class="card-gold tile tile-manager anim-kickin anim-delay-400">
+          <div class="fin-head">
+            <span class="tile-l">👔 CONTO MANAGER</span>
+            {#if managerAccount.history.length >= 2}
+              {@const up = managerTrendPct >= 0}
+              <span class="fin-trend" class:up class:down={!up} title="Variazione saldo manager ultimi 4 turni">
+                {up ? '↑' : '↓'} {Math.abs(managerTrendPct).toFixed(1).replace('.', ',')}%
+              </span>
+            {/if}
+          </div>
+          <div class="fin-cash text-indigo">{fmtMoney(managerAccount.cash)}</div>
+          <div class="fin-meta-list">
+            <div class="fin-row">
+              <span class="fin-row-l">Stipendio</span>
+              <span class="fin-row-v">{fmtMoney(managerAccount.weeklyWage)}/sett</span>
+            </div>
+            <div class="fin-row">
+              <span class="fin-row-l">Annuo</span>
+              <span class="fin-row-v">{fmtMoney(managerAccount.weeklyWage * 52)}</span>
+            </div>
+            <div class="fin-row">
+              <span class="fin-row-l">Totale carriera</span>
+              <span class="fin-row-v">{fmtMoney(managerAccount.totalEarned)}</span>
             </div>
           </div>
         </section>
@@ -401,6 +436,22 @@
   }
   .fin-row-l { color: #918778; text-transform: uppercase; letter-spacing: 0.08em; font-size: 10px; }
   .fin-row-v { color: #d4cfc1; font-weight: 600; }
+
+  /* Tile Conto Manager (Fase 4.A) — variante indigo speculare a BILANCIO */
+  .tile-manager {
+    padding: 16px 18px;
+    gap: 4px;
+    border-color: rgba(99, 102, 241, 0.32) !important;
+    background:
+      radial-gradient(ellipse at top right, rgba(99, 102, 241, 0.08), transparent 60%),
+      linear-gradient(180deg, rgba(99, 102, 241, 0.04), rgba(0, 0, 0, 0)) !important;
+  }
+  .tile-manager .tile-l { color: #c7d2fe; }
+  .tile-manager .fin-meta-list { border-top-color: rgba(99, 102, 241, 0.18); }
+  .text-indigo {
+    color: #c7d2fe;
+    text-shadow: 0 0 12px rgba(99, 102, 241, 0.25);
+  }
 
   .panel { padding: 18px 22px; }
   .panel.last-result { grid-column: span 2; }

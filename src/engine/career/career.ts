@@ -20,6 +20,7 @@ import { buildAllSchedules } from '$engine/gen/schedule'
 import { simulateMatch } from '$engine/match/engine'
 import { calcOverall } from '$engine/gen/player'
 import { initClubFinances, weeklyTick as financesWeeklyTick, applyMatchdayGate } from './finances'
+import { initManagerAccount, tickManagerWeekly } from './manager'
 import { ensureAllPlayersContracts, refreshMyClubWageBudget } from './contracts'
 import { tickTransferOffers, tickAIToAITransfers } from './transfers'
 import { ensureMarketValuesCalibrated } from './aging'
@@ -265,6 +266,9 @@ export function buildCareerFromPreview(preview: PreviewWorld, opts: Omit<CreateC
     teamId,
     reputation: 30,
     seasonsAtClub: 0,
+    // Fase 4.A: conto personale del manager, calibrato sulla reputation del club
+    // (stipendio settimanale + bonus di benvenuto €50k).
+    account: initManagerAccount(myTeam),
   }
 
   // Squadra del giocatore: lineup automatica
@@ -430,6 +434,10 @@ export function advanceMatchday(career: Career): AdvanceMatchdayResult {
   // Fase 3.1: tick settimanale finanze (ricavi/spese del mio club + AI teams).
   // Si appoggia a ensureClubFinances per save legacy.
   financesWeeklyTick(career, md)
+
+  // Fase 4.A: stipendio settimanale manager (separato dalla cassa club).
+  // ensureManagerAccount popola il conto al volo per save legacy.
+  tickManagerWeekly(career, md)
 
   // Fase 3.G.1: tick mercato (genera offerte AI verso mio club se window aperta,
   // scade le pending vecchie). md = matchday APPENA giocato.

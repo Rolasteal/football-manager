@@ -60,6 +60,43 @@ export interface Manager {
   reputation: number
   /** Stagioni completate con la squadra attuale */
   seasonsAtClub: number
+  /**
+   * Conto bancario personale del manager (Fase 4). Separato dalla cassa club:
+   * il manager guadagna uno stipendio settimanale, accumula bonus performance
+   * end-of-season, e questi soldi sono SUOI (non possono pagare giocatori).
+   * Foundation per Fase 5+ (collezione/scommesse/fanta che spendono € Manager).
+   *
+   * Opzionale per backward-compat: `ensureManagerAccount` lo inizializza al
+   * volo per save legacy creati prima della Fase 4.
+   */
+  account?: ManagerAccount
+}
+
+/**
+ * Conto personale del manager (Fase 4.A).
+ *
+ * Sincronia: nessuna con clubFinances/team.balance. È un saldo distinto, gestito
+ * da `tickManagerWeekly` ogni matchday e da bonus end-of-season (4.B).
+ */
+export interface ManagerAccount {
+  /** Saldo attuale in € */
+  cash: number
+  /** Stipendio settimanale base in € */
+  weeklyWage: number
+  /** Totale guadagnato a vita (stipendio + bonus, non scende mai) */
+  totalEarned: number
+  /** Ultimi ~30 movimenti per UI history + trend */
+  history: ManagerAccountEntry[]
+}
+
+export interface ManagerAccountEntry {
+  matchday: number
+  /** Etichetta breve (es. "Stipendio", "Bonus salvezza", "Bonus UCL", "Spesa") */
+  label: string
+  /** Importo in € (positivo = entrata, negativo = uscita) */
+  amount: number
+  /** Saldo DOPO questo movimento */
+  balanceAfter: number
 }
 
 /** Stato squadra del giocatore (tattica salvata + lineup correnti) */
