@@ -288,19 +288,20 @@ export function generatePlayer(rng: Rng, opts: GenPlayerOptions): Player {
     teamId: opts.teamId,
     shirtNumber: opts.shirtNumber ?? null,
   }
-  // Potential: deve dare margine di crescita coerente con scaling per età.
-  // Fix v2 (2026-05-27): per giovani sub-21 (ora con attributi scalati 0.50-0.90),
-  // growthRoom è MOLTO maggiore per compensare il currentOvr basso.
-  // Esempio: 17enne scalato → currentOvr ~45-50 → growthRoom 15-35 → pot 60-85
-  // (distribuzione realistica: la maggioranza 60-70 normali, pochi 80+ ottimi).
+  // Potential: distribuito su 5 fasce realistiche per giovani ≤ 21, coerente
+  // con `rollYouthPotential` di youth.ts. Fix v3 (2026-05-27): prima il
+  // growthRoom era uniforme (15-38 per 16-17, 8-22 per 20-21) → TUTTI i
+  // giovani finivano ottimo/buono (gap medio +22). Ora la distribuzione segue
+  // 1% ottimo / 4% buono / 15% normale / 30% medio / 50% scarso, calibrata
+  // per età (più giovane = più growthRoom dentro ogni fascia).
+  // Veterani 22+: invariato (potential ≈ overall ± piccolo delta).
   const currentOvr = calcOverall(player)
   let growthRoom: number
-  if (ageRoll <= 17) growthRoom = rng.int(15, 38)      // 16-17: enorme crescita possibile
-  else if (ageRoll <= 19) growthRoom = rng.int(12, 32) // 18-19: grossa crescita
-  else if (ageRoll <= 21) growthRoom = rng.int(8, 22)  // 20-21: crescita media
-  else if (ageRoll < 24) growthRoom = rng.int(3, 10)   // 22-23: pre-picco, lieve
-  else if (ageRoll <= 28) growthRoom = rng.int(0, 3)   // picco, quasi nulla
-  else growthRoom = rng.int(-3, 0)                     // post-picco, potential = peak storico
+  if (ageRoll <= 21) {
+    growthRoom = rollYouthGrowthRoom(rng, ageRoll)
+  } else if (ageRoll < 24) growthRoom = rng.int(3, 10)   // 22-23: pre-picco, lieve
+  else if (ageRoll <= 28) growthRoom = rng.int(0, 3)     // picco, quasi nulla
+  else growthRoom = rng.int(-3, 0)                       // post-picco, potential = peak storico
   player.potential = clamp(currentOvr + growthRoom + (ageRoll >= 29 ? Math.round((ageRoll - 28) * 1.5) : 0), 30, 99)
 
   // Fase 3.G fix-values: marketValue calibrato Serie A 2024 via formula unificata.
@@ -308,6 +309,44 @@ export function generatePlayer(rng: Rng, opts: GenPlayerOptions): Player {
   // Stessa formula di `recalculateMarketValue` in career/aging.ts.
   player.marketValue = computeInitialMarketValue(player, opts.seasonYear)
   return player
+}
+
+/**
+ * Distribuisce il growthRoom (= potential - currentOvr) di un giovane ≤21 anni
+ * secondo 5 fasce realistiche (coerenti con `rollYouthPotential` di youth.ts):
+ * - **Ottimo** (1%):  crack generazionale (Yamal/Endrick), gap enorme
+ * - **Buono** (4%):   top player futuro
+ * - **Normale** (15%): titolare medio/buono
+ * - **Medio** (30%):  riserva Serie A
+ * - **Scarso** (50%): non sfondano oltre il livello attuale
+ *
+ * Calibrato per età: i più giovani hanno più margine in ogni fascia.
+ *
+ * Esportata per la migration `ensureYouthPotentialV3` in aging.ts.
+ */
+export function rollYouthGrowthRoom(rng: Rng, age: number): number {
+  const r = rng.next()
+  // Range per (fascia × età): più giovane = più margine.
+  if (age <= 17) {
+    if (r < 0.01) return rng.int(25, 35)  // ottimo
+    if (r < 0.05) return rng.int(15, 22)  // buono
+    if (r < 0.20) return rng.int(8, 13)   // normale
+    if (r < 0.50) return rng.int(3, 7)    // medio
+    return rng.int(0, 3)                  // scarso
+  }
+  if (age <= 19) {
+    if (r < 0.01) return rng.int(20, 28)
+    if (r < 0.05) return rng.int(12, 18)
+    if (r < 0.20) return rng.int(6, 10)
+    if (r < 0.50) return rng.int(2, 5)
+    return rng.int(0, 2)
+  }
+  // age 20-21
+  if (r < 0.01) return rng.int(15, 22)
+  if (r < 0.05) return rng.int(8, 13)
+  if (r < 0.20) return rng.int(4, 7)
+  if (r < 0.50) return rng.int(1, 3)
+  return rng.int(0, 1)
 }
 
 /**

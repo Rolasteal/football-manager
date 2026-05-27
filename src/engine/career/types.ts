@@ -258,4 +258,13 @@ export interface Career {
    * Fix giovani 2026-05-27.
    */
   youthRescaledV2?: boolean
+
+  /**
+   * Flag migration one-shot: il `potential` dei player ≤ 21 anni è stato
+   * ricalcolato con la distribuzione probabilistica 5 fasce (1% ottimo / 4%
+   * buono / 15% normale / 30% medio / 50% scarso) invece del growthRoom
+   * uniforme buggato. Setato da `ensureYouthPotentialV3`. Fix giovani v3
+   * 2026-05-27.
+   */
+  youthPotentialV3?: boolean
 }

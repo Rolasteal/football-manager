@@ -6,7 +6,7 @@
   import { calcOverall } from '$engine/gen/player'
   import { fmtMoney } from '$engine/career/finances'
   import { tierFromYouthPotential, type YouthTier } from '$engine/career/youth'
-  import { ensureYouthRescaled } from '$engine/career/aging'
+  import { ensureYouthRescaled, ensureYouthPotentialV3 } from '$engine/career/aging'
   import type { Player, Position } from '$engine/types'
 
   const store = careerStore()
@@ -18,6 +18,11 @@
     // Migration one-shot per save legacy: rescale dei giovani al new factor v2.
     // Idempotente via marker career.youthRescaledV2.
     ensureYouthRescaled(career)
+    // Migration one-shot per save legacy: ricalcola potential dei giovani con
+    // distribuzione 5 fasce (era growthRoom uniforme → tutti ottimi). Idempotente
+    // via marker career.youthPotentialV3.
+    ensureYouthPotentialV3(career)
+    persistActiveCareer()
   })
 
   // Filtri

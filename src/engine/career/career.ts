@@ -334,6 +334,10 @@ export function buildCareerFromPreview(preview: PreviewWorld, opts: Omit<CreateC
   // age ≤ 21, quindi i player iniziali sono già scalati correttamente. Marca
   // come migrato per evitare doppio scaling al primo /youth visit.
   career.youthRescaledV2 = true
+  // Fix giovani v3 (2026-05-27): generatePlayer ora calcola potential con
+  // distribuzione 5 fasce via rollYouthGrowthRoom, quindi i player iniziali
+  // hanno già il potential corretto.
+  career.youthPotentialV3 = true
   return career
 }
 
