@@ -18,6 +18,7 @@
     { to: '/standings',  label: 'Classifica', icon: '🏆' },
     { to: '/stadium',    label: 'Stadio',     icon: '🏟️' },
     { to: '/transfers',  label: 'Mercato',    icon: '💰' },
+    { to: '/youth',      label: 'Giovani',    icon: '🌱' },
   ]
 
   // svelte-spa-router usa hash routing. Path corrente = hash senza il "#".

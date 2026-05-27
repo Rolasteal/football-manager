@@ -24,11 +24,12 @@
  * monte ingaggi reale del club.
  */
 
-import type { Player, Team, PlayerContract } from '$engine/types'
+import type { EntityId, Player, Team, PlayerContract } from '$engine/types'
 import type { Rng } from '$engine/gen/rng'
-import type { Career } from './types'
+import type { Career, NewsItem } from './types'
 import { calcOverall } from '$engine/gen/player'
-import { createRng } from '$engine/gen/rng'
+import { createRng, generateId } from '$engine/gen/rng'
+import { ensureClubFinances, fmtMoney } from './finances'
 
 /** Età alla data di riferimento (1° luglio del refYear) */
 function ageAt(birthDate: string, refYear: number): number {
@@ -188,17 +189,380 @@ export function refreshMyClubWageBudget(career: Career): void {
   career.clubFinances.weeklyExpenses = Math.round(myWeekly + 50_000)
 }
 
-// ====== Decremento scadenze a fine stagione ======
+// ====== Fase 3.G.3: scadenze contratti a fine stagione ======
 
 /**
- * NON fa scadere i contratti (svincolo / rinnovi entrano in 3.G mercato).
- * Limita la finestra di scadenza a refYear+5 max per pulizia.
- *
- * In futuro 3.G: i contratti con endYear === refYear diventano svincolati
- * (teamId = null, contract = undefined) salvo offerta di rinnovo accettata.
+ * Risultato del processo end-of-season su contratti per news/UI.
  */
-export function applyContractEndOfSeason(_career: Career): void {
-  // Fase 3.D: no-op. Le scadenze si avvicinano naturalmente (refYear avanza,
-  // endYear resta fisso). La UI mostra "scade tra X anni" → diminuisce di sé.
-  // Fase 3.G implementerà: rinnovo automatico per AI / svincolo se non rinnovato.
+export interface ContractEndOfSeasonReport {
+  /** Player rinnovati automaticamente (solo AI) — id + new contract */
+  aiRenewed: { playerId: EntityId; teamId: EntityId; newEndYear: number; newWeeklyWage: number }[]
+  /** Player svincolati (sia miei che AI). Vengono spostati a teamId=null */
+  released: { playerId: EntityId; previousTeamId: EntityId; playerName: string; position: string }[]
+  /** Player MIEI svincolati specificamente (sottoinsieme di `released`) per news mirate */
+  myReleased: { playerId: EntityId; playerName: string; position: string; overall: number }[]
+}
+
+/**
+ * Hookato in startNewSeason DOPO endOfSeasonAgeTick (quindi `career.season.year`
+ * è già la nuova stagione: anno N+1). I contratti con `endYear <= N+1 - 1`
+ * (cioè endYear era N, scadevano a giugno N → ora è luglio N+1) sono scaduti.
+ *
+ * Logica:
+ * 1. **AI teams**: per ogni player con contratto scaduto, decide se auto-rinnovare:
+ *    - Se OVR > avg roster del team + 3 AND age < 32 → auto-rinnova (importante)
+ *    - Se OVR > avg roster + 1 AND age < 30 → 50% prob rinnovo (mid-tier)
+ *    - Altrimenti svincola (player.teamId = null, contract = undefined)
+ *    - Nuovo contratto: 2-4 anni, wage = fairWage × 1.05 (premio fedeltà)
+ * 2. **MIO team**: nessun auto-rinnovo. I miei player con contract scaduto
+ *    diventano svincolati a meno che io non li abbia rinnovati manualmente
+ *    PRIMA della nuova stagione (UI PlayerDetail). Per ognuno svincolato,
+ *    una news mi avvisa.
+ *
+ * Determinismo: rng dedicato `seed ^ newYear ^ 0xC047A2`.
+ */
+export function applyContractEndOfSeason(career: Career): ContractEndOfSeasonReport {
+  const report: ContractEndOfSeasonReport = {
+    aiRenewed: [],
+    released: [],
+    myReleased: [],
+  }
+  const newYear = career.season.year  // già avanzato da endOfSeasonAgeTick
+  const myTeamId = career.club.teamId
+  const rng = createRng((career.seed ^ newYear ^ 0xC047A2) >>> 0)
+
+  // Pre-calcola avg overall per ogni team (per decisione AI auto-rinnovi)
+  const teamAvgOvr = new Map<EntityId, number>()
+  for (const team of Object.values(career.teams)) {
+    const roster = Object.values(career.players).filter(p => p.teamId === team.id)
+    if (roster.length === 0) { teamAvgOvr.set(team.id, 60); continue }
+    const sum = roster.reduce((s, p) => s + calcOverall(p), 0)
+    teamAvgOvr.set(team.id, sum / roster.length)
+  }
+
+  // Iterazione deterministic per id
+  const players = Object.values(career.players).sort((a, b) => a.id.localeCompare(b.id))
+
+  for (const player of players) {
+    if (!player.teamId) continue                       // già svincolato
+    if (!player.contract) continue                     // niente contratto (sarà popolato da ensure)
+    if (player.contract.endYear > newYear) continue    // contratto ancora valido
+
+    const team = career.teams[player.teamId]
+    if (!team) continue
+
+    const isMine = player.teamId === myTeamId
+    const ovr = calcOverall(player)
+    const age = ageAt(player.birthDate, newYear)
+    const avgOvr = teamAvgOvr.get(player.teamId) ?? 60
+
+    if (isMine) {
+      // Mio club: svincolo (non ho rinnovato in tempo). UI mostrerà la news.
+      releasePlayer(player)
+      report.released.push({
+        playerId: player.id,
+        previousTeamId: team.id,
+        playerName: `${player.firstName} ${player.lastName}`,
+        position: player.position,
+      })
+      report.myReleased.push({
+        playerId: player.id,
+        playerName: `${player.firstName} ${player.lastName}`,
+        position: player.position,
+        overall: ovr,
+      })
+      continue
+    }
+
+    // AI club: decisione auto-rinnovo
+    let willRenew = false
+    if (ovr > avgOvr + 3 && age < 32) {
+      willRenew = true  // top del roster, sicuramente rinnovo
+    } else if (ovr > avgOvr + 1 && age < 30) {
+      willRenew = rng.chance(0.5)  // mid-tier, 50% prob
+    } else if (age < 28 && ovr >= avgOvr - 2) {
+      willRenew = rng.chance(0.30)  // giovane medio, 30% prob (potrebbe crescere)
+    }
+    // else: vecchio o scarso → svincolo automatico
+
+    if (willRenew) {
+      const newWage = Math.round(weeklyWageFor(player, team, newYear) * 1.05)
+      const length = contractLengthFor(age, rng)
+      const newContract: PlayerContract = {
+        startYear: newYear,
+        endYear: newYear + length,
+        weeklyWage: newWage,
+      }
+      player.contract = newContract
+      report.aiRenewed.push({
+        playerId: player.id,
+        teamId: team.id,
+        newEndYear: newContract.endYear,
+        newWeeklyWage: newWage,
+      })
+    } else {
+      releasePlayer(player)
+      report.released.push({
+        playerId: player.id,
+        previousTeamId: team.id,
+        playerName: `${player.firstName} ${player.lastName}`,
+        position: player.position,
+      })
+    }
+  }
+
+  // Se ho svincolato qualcuno dal mio club, aggiorna monte ingaggi
+  if (report.myReleased.length > 0) {
+    refreshMyClubWageBudget(career)
+  }
+
+  career.updatedAt = Date.now()
+  return report
+}
+
+/**
+ * Rilascia un giocatore: lo rimuove dal roster del team e dal lineup, e
+ * pulisce il contratto. teamId → null.
+ */
+function releasePlayer(player: Player): void {
+  player.teamId = null
+  player.contract = undefined
+  // Nota: il lineup del mio club viene pulito separatamente in startNewSeason
+  // (cleanMyLineupAfterReleases) per non importare $engine/tactics qui.
+}
+
+/**
+ * Pulisce il lineup del mio club dai giocatori svincolati a fine stagione.
+ * Chiamato da startNewSeason DOPO applyContractEndOfSeason.
+ * Se il capitano è stato svincolato, ne assegna uno nuovo (primo starter rimasto).
+ */
+export function cleanMyLineupAfterReleases(career: Career, releasedIds: EntityId[]): void {
+  if (releasedIds.length === 0) return
+  const idSet = new Set(releasedIds)
+  career.club.lineup.starters = career.club.lineup.starters.filter(id => !idSet.has(id))
+  career.club.lineup.bench = career.club.lineup.bench.filter(id => !idSet.has(id))
+  if (career.club.tactics.captainId && idSet.has(career.club.tactics.captainId)) {
+    career.club.tactics.captainId = career.club.lineup.starters[0]
+  }
+}
+
+// ====== Fase 3.G.3: rinnovo manuale del mio player ======
+
+export type RenewalOutcome = 'accepted' | 'countered' | 'rejected'
+
+export interface RenewalResult {
+  ok: boolean
+  reason?: string
+  outcome?: RenewalOutcome
+  /** Wage suggerito dall'AI quando outcome === 'countered' */
+  counterWage?: number
+  /** Wage "equo" usato come riferimento (fair value) */
+  fairWage?: number
+  /** Messaggio leggibile per UI */
+  message?: string
+}
+
+/**
+ * Proposta di rinnovo per un MIO player. Valuta accettazione in base al
+ * rapporto wage proposta vs fairWage:
+ *
+ * - **accepted**: proposedWage >= fairWage × 0.92 (entro 8% sotto = il player accetta)
+ * - **countered**: proposedWage >= fairWage × 0.75 → AI risponde con counter al fairWage
+ * - **rejected**: proposedWage < fairWage × 0.75 → player offeso, no contratto
+ *
+ * Validazioni:
+ * - player è mio
+ * - years 1-5
+ * - proposedWage > 0 e arrotondato a 500€
+ *
+ * Quando accepted, il nuovo contratto sostituisce quello esistente PARTENDO
+ * DALL'ANNO CORRENTE (career.season.year), con endYear = startYear + years.
+ * Il monte ingaggi e la news vengono aggiornati.
+ *
+ * Idempotente: l'UI può chiamarla più volte (es. per testare). Solo `outcome=='accepted'`
+ * applica modifiche di stato.
+ */
+export function proposeRenewal(
+  career: Career,
+  playerId: EntityId,
+  years: number,
+  proposedWage: number
+): RenewalResult {
+  const player = career.players[playerId]
+  if (!player) return { ok: false, reason: 'Giocatore non trovato.' }
+  if (player.teamId !== career.club.teamId) {
+    return { ok: false, reason: 'Puoi rinnovare solo i tuoi giocatori.' }
+  }
+  if (years < 1 || years > 5) {
+    return { ok: false, reason: 'La durata deve essere tra 1 e 5 anni.' }
+  }
+  const team = career.teams[player.teamId]
+  if (!team) return { ok: false, reason: 'Dati squadra incompleti.' }
+  if (proposedWage <= 0) return { ok: false, reason: 'Stipendio non valido.' }
+
+  // Arrotonda a 500€ per leggibilità
+  proposedWage = Math.round(proposedWage / 500) * 500
+
+  const fairWage = weeklyWageFor(player, team, career.season.year)
+  const ratio = proposedWage / fairWage
+
+  const playerFullName = `${player.firstName} ${player.lastName}`
+
+  // 1) Accettata
+  if (ratio >= 0.92) {
+    const startYear = career.season.year
+    player.contract = {
+      startYear,
+      endYear: startYear + years,
+      weeklyWage: proposedWage,
+    }
+    refreshMyClubWageBudget(career)
+    // News al feed
+    const rng = createRng((career.seed ^ startYear ^ player.id.charCodeAt(0) ^ 0xC047A3) >>> 0)
+    career.news.unshift({
+      id: generateId(rng),
+      date: `${startYear}-${String(8 + Math.floor(career.season.currentMatchday / 4) % 4).padStart(2, '0')}-15`,
+      kind: 'transfer',
+      title: `Rinnovo: ${playerFullName} firma fino al ${startYear + years}`,
+      body: `${playerFullName} (${player.position}) ha rinnovato il contratto con ${team.name} per ${years} ann${years === 1 ? 'o' : 'i'} a ${fmtMoney(proposedWage)}/settimana.`,
+      read: false,
+    })
+    if (career.news.length > 50) career.news.length = 50
+    career.updatedAt = Date.now()
+    return {
+      ok: true,
+      outcome: 'accepted',
+      fairWage,
+      message: `${playerFullName} ha firmato il rinnovo fino al ${startYear + years} per ${fmtMoney(proposedWage)}/sett.`,
+    }
+  }
+
+  // 2) Counter: AI chiede il fairWage
+  if (ratio >= 0.75) {
+    const counter = Math.round(fairWage / 500) * 500
+    return {
+      ok: true,
+      outcome: 'countered',
+      counterWage: counter,
+      fairWage,
+      message: `${playerFullName} ritiene ${fmtMoney(proposedWage)}/sett troppo basso. Chiede almeno ${fmtMoney(counter)}/sett.`,
+    }
+  }
+
+  // 3) Rifiutato (troppo basso, player offeso)
+  return {
+    ok: true,
+    outcome: 'rejected',
+    fairWage,
+    message: `${playerFullName} si è offeso per l'offerta di ${fmtMoney(proposedWage)}/sett e ha rifiutato categoricamente.`,
+  }
+}
+
+// ====== Fase 3.G.3: firma free agent ======
+
+export type SignFreeAgentOutcome = 'accepted' | 'countered' | 'rejected'
+
+export interface SignFreeAgentResult {
+  ok: boolean
+  reason?: string
+  outcome?: SignFreeAgentOutcome
+  counterWage?: number
+  fairWage?: number
+  message?: string
+}
+
+/**
+ * Firma un giocatore svincolato (player.teamId === null). Nessun costo
+ * trasferimento, solo stipendio. Più flessibile del rinnovo perché il
+ * player è senza squadra:
+ *
+ * - **accepted**: proposedWage >= fairWage × 0.85 (player è più flessibile, accetta -15%)
+ * - **countered**: proposedWage >= fairWage × 0.70 → counter al fairWage
+ * - **rejected**: troppo basso
+ *
+ * Su accepted: player.teamId = mio, player.contract = nuovo, news, monte ingaggi.
+ */
+export function signFreeAgent(
+  career: Career,
+  playerId: EntityId,
+  years: number,
+  proposedWage: number
+): SignFreeAgentResult {
+  const player = career.players[playerId]
+  if (!player) return { ok: false, reason: 'Giocatore non trovato.' }
+  if (player.teamId) {
+    return { ok: false, reason: 'Il giocatore non è svincolato.' }
+  }
+  if (years < 1 || years > 5) {
+    return { ok: false, reason: 'La durata deve essere tra 1 e 5 anni.' }
+  }
+  if (proposedWage <= 0) return { ok: false, reason: 'Stipendio non valido.' }
+
+  const myTeam = career.teams[career.club.teamId]
+  if (!myTeam) return { ok: false, reason: 'Squadra non trovata.' }
+
+  proposedWage = Math.round(proposedWage / 500) * 500
+  const fairWage = weeklyWageFor(player, myTeam, career.season.year)
+  const ratio = proposedWage / fairWage
+  const playerFullName = `${player.firstName} ${player.lastName}`
+
+  if (ratio >= 0.85) {
+    const startYear = career.season.year
+    player.teamId = myTeam.id
+    player.contract = {
+      startYear,
+      endYear: startYear + years,
+      weeklyWage: proposedWage,
+    }
+    refreshMyClubWageBudget(career)
+    const rng = createRng((career.seed ^ startYear ^ player.id.charCodeAt(0) ^ 0xC047A4) >>> 0)
+    career.news.unshift({
+      id: generateId(rng),
+      date: `${startYear}-${String(8 + Math.floor(career.season.currentMatchday / 4) % 4).padStart(2, '0')}-15`,
+      kind: 'transfer',
+      title: `Svincolato firmato: ${playerFullName} (${player.position})`,
+      body: `${myTeam.name} ha firmato lo svincolato ${playerFullName} per ${years} ann${years === 1 ? 'o' : 'i'} a ${fmtMoney(proposedWage)}/settimana.`,
+      read: false,
+    })
+    if (career.news.length > 50) career.news.length = 50
+    career.updatedAt = Date.now()
+    return {
+      ok: true,
+      outcome: 'accepted',
+      fairWage,
+      message: `${playerFullName} ha firmato a parametro zero con ${myTeam.name} fino al ${startYear + years}.`,
+    }
+  }
+
+  if (ratio >= 0.70) {
+    const counter = Math.round(fairWage / 500) * 500
+    return {
+      ok: true,
+      outcome: 'countered',
+      counterWage: counter,
+      fairWage,
+      message: `${playerFullName} (svincolato) chiede almeno ${fmtMoney(counter)}/sett. La tua offerta di ${fmtMoney(proposedWage)}/sett è troppo bassa.`,
+    }
+  }
+
+  return {
+    ok: true,
+    outcome: 'rejected',
+    fairWage,
+    message: `${playerFullName} ha rifiutato ${fmtMoney(proposedWage)}/sett come fuori mercato.`,
+  }
+}
+
+// ====== Helper UI ======
+
+/** Tutti i free agent della career (teamId === null), ordinati per OVR desc */
+export function listFreeAgents(career: Career): Player[] {
+  return Object.values(career.players).filter(p => !p.teamId)
+}
+
+/** Wage "equo" stimato per un player nel mio club (per UI come default suggerito) */
+export function estimateFairWage(career: Career, player: Player): number {
+  const myTeam = career.teams[career.club.teamId]
+  if (!myTeam) return 1000
+  return weeklyWageFor(player, myTeam, career.season.year)
 }

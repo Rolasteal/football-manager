@@ -2,10 +2,15 @@
   import { push } from 'svelte-spa-router'
   import { onMount } from 'svelte'
   import AppShell from '$lib/AppShell.svelte'
-  import { careerStore } from '$state/career.svelte'
+  import { careerStore, persistActiveCareer } from '$state/career.svelte'
   import { calcOverall } from '$engine/gen/player'
   import { ensurePlayerFMAttributes } from '$engine/gen/playerCompat'
-  import { ensurePlayerContract } from '$engine/career/contracts'
+  import {
+    ensurePlayerContract,
+    proposeRenewal,
+    estimateFairWage,
+    type RenewalOutcome,
+  } from '$engine/career/contracts'
   import { fmtMoney } from '$engine/career/finances'
   import type { Player, Position, PlayerAttributes } from '$engine/types'
 
@@ -153,7 +158,55 @@
       push('/squad')
     }
   }
+
+  // ====== Rinnovo contratto (Fase 3.G.3) ======
+  let isMine = $derived(!!(player && career && player.teamId === career.club.teamId))
+  let fairWage = $derived(player && career && isMine ? estimateFairWage(career, player) : 0)
+
+  let showRenewModal = $state(false)
+  let renewYears = $state<number>(3)
+  let renewWage = $state<number>(0)
+  let renewMsg = $state<string | null>(null)
+  let renewOutcome = $state<RenewalOutcome | null>(null)
+  let renewOk = $state(false)
+
+  function openRenew() {
+    if (!player) return
+    renewYears = 3
+    renewWage = Math.round(fairWage / 500) * 500
+    renewMsg = null
+    renewOutcome = null
+    showRenewModal = true
+  }
+  function closeRenew() {
+    showRenewModal = false
+    renewMsg = null
+    renewOutcome = null
+  }
+  function setWagePct(pct: number) {
+    renewWage = Math.round(fairWage * (1 + pct / 100) / 500) * 500
+  }
+  async function handleRenew() {
+    if (!career || !player) return
+    const res = proposeRenewal(career, player.id, renewYears, renewWage)
+    renewOk = res.ok
+    renewMsg = res.message ?? res.reason ?? null
+    renewOutcome = res.outcome ?? null
+    if (res.ok && res.outcome === 'accepted') {
+      await persistActiveCareer()
+      setTimeout(() => closeRenew(), 2200)
+    } else if (res.ok && res.outcome === 'countered' && res.counterWage) {
+      // Pre-imposta la counter per il prossimo tentativo
+      setTimeout(() => {
+        if (res.counterWage) renewWage = res.counterWage
+      }, 100)
+    }
+  }
 </script>
+
+<svelte:window onkeydown={(e) => {
+  if (e.key === 'Escape' && showRenewModal) closeRenew()
+}} />
 
 <AppShell>
   {#if !career}
@@ -247,7 +300,14 @@
     {#if player.contract}
       {@const yearsLeft = player.contract.endYear - (career?.season.year ?? 0)}
       <section class="card-gold contract-card anim-kickin">
-        <h3 class="attr-h">Contratto</h3>
+        <div class="contract-head">
+          <h3 class="attr-h">Contratto</h3>
+          {#if isMine}
+            <button class="btn-renew" onclick={openRenew} title="Rinnova il contratto del giocatore">
+              📝 Rinnova
+            </button>
+          {/if}
+        </div>
         <div class="contract-grid">
           <div class="contract-cell">
             <span class="contract-l">Scadenza</span>
@@ -274,6 +334,16 @@
           </div>
         </div>
       </section>
+    {:else if isMine}
+      <section class="card-gold contract-card anim-kickin">
+        <div class="contract-head">
+          <h3 class="attr-h">Contratto</h3>
+        </div>
+        <p class="contract-empty">
+          Questo giocatore non ha un contratto attivo (svincolato). Va firmato da
+          <button class="link-btn" onclick={() => push('/transfers')}>Mercato → Cerca giocatori</button>.
+        </p>
+      </section>
     {/if}
 
     {#if player.secondaryPositions && player.secondaryPositions.length > 0}
@@ -286,6 +356,95 @@
           {/each}
         </div>
       </section>
+    {/if}
+
+    <!-- ====== Modale Rinnovo Contratto (Fase 3.G.3) ====== -->
+    {#if showRenewModal && isMine}
+      <div
+        class="modal-backdrop"
+        onclick={closeRenew}
+        onkeydown={(e) => { if (e.key === 'Escape') closeRenew() }}
+        role="presentation"
+        tabindex="-1"
+      >
+        <div
+          class="modal-renew card-gold"
+          onclick={(e) => e.stopPropagation()}
+          onkeydown={(e) => e.stopPropagation()}
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="modal-renew-title"
+          tabindex="-1"
+        >
+          <header class="modal-head">
+            <div>
+              <h3 class="modal-title" id="modal-renew-title">Rinnovo contratto</h3>
+              <div class="modal-sub">
+                Per <strong>{player.firstName} {player.lastName}</strong> · {player.position} · OVR {calcOverall(player)}
+              </div>
+            </div>
+            <button class="modal-close" onclick={closeRenew} aria-label="Chiudi">✗</button>
+          </header>
+
+          <div class="modal-stats">
+            <div class="stat">
+              <span class="stat-l">Stipendio attuale</span>
+              <span class="stat-v">{player.contract ? fmtMoney(player.contract.weeklyWage) + '/sett' : '—'}</span>
+            </div>
+            <div class="stat">
+              <span class="stat-l">Stipendio equo (riferimento)</span>
+              <span class="stat-v text-gold">{fmtMoney(fairWage)}/sett</span>
+            </div>
+            <div class="stat">
+              <span class="stat-l">Scadenza attuale</span>
+              <span class="stat-v">{player.contract ? `Giu ${player.contract.endYear}` : '—'}</span>
+            </div>
+          </div>
+
+          <div class="modal-form">
+            <label class="renew-row">
+              <span>Durata contratto (anni)</span>
+              <input type="number" class="renew-input small" bind:value={renewYears} min="1" max="5" />
+            </label>
+            <label class="renew-row">
+              <span>Stipendio settimanale proposto</span>
+              <div class="counter-input-wrap">
+                <span class="counter-prefix">€</span>
+                <input type="number" class="renew-input" bind:value={renewWage} min="500" step="500" />
+              </div>
+            </label>
+            <div class="counter-presets">
+              <button class="preset-btn" onclick={() => setWagePct(-10)}>-10%</button>
+              <button class="preset-btn" onclick={() => setWagePct(0)}>Equo</button>
+              <button class="preset-btn" onclick={() => setWagePct(10)}>+10%</button>
+              <button class="preset-btn" onclick={() => setWagePct(25)}>+25%</button>
+            </div>
+            <div class="form-hint">
+              <strong>Tip:</strong> il giocatore accetta dal -8% allo +∞ rispetto al fair wage.
+              Sotto il -25% rifiuta categoricamente e si offende. La durata 1-5 anni non
+              influenza l'accettazione (semplificazione 3.G.3).
+            </div>
+          </div>
+
+          {#if renewMsg}
+            <div class="negotiate-result"
+              class:ok={renewOk && renewOutcome === 'accepted'}
+              class:warn={renewOk && renewOutcome === 'countered'}
+              class:err={!renewOk || renewOutcome === 'rejected'}>
+              {renewMsg}
+            </div>
+          {/if}
+
+          <div class="modal-actions">
+            <button class="btn-renew modal-submit" onclick={handleRenew} disabled={renewYears < 1 || renewYears > 5 || renewWage <= 0}>
+              📝 Proponi rinnovo
+            </button>
+            <button class="btn-reject modal-reject" onclick={closeRenew}>
+              Chiudi
+            </button>
+          </div>
+        </div>
+      </div>
     {/if}
   {/if}
 </AppShell>
@@ -547,11 +706,53 @@
   .bar-fill.a-low  { background: linear-gradient(90deg, #c2410c, #fdba74); }
   .bar-fill.a-bad  { background: linear-gradient(90deg, #7f1d1d, #fca5a5); }
 
-  /* ===== Contratto (Fase 3.D) ===== */
+  /* ===== Contratto (Fase 3.D + 3.G.3) ===== */
   .contract-card {
     padding: 16px 22px;
     margin-bottom: 18px;
   }
+  .contract-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 4px;
+  }
+  .contract-head .attr-h { margin: 0 0 8px 0; border-bottom: 0; padding-bottom: 0; }
+  .contract-empty {
+    color: #b8b0a0;
+    font-size: 13px;
+    margin: 6px 0 0;
+  }
+  .link-btn {
+    background: none; border: 0;
+    color: #fcd34d;
+    cursor: pointer;
+    text-decoration: underline;
+    font-family: inherit;
+    font-size: inherit;
+    padding: 0 2px;
+  }
+  .link-btn:hover { color: #fde68a; }
+  .btn-renew {
+    padding: 7px 14px;
+    font-size: 12.5px;
+    font-weight: 700;
+    font-family: inherit;
+    color: #fff;
+    background: linear-gradient(135deg, #4338ca, #6366f1 60%, #4338ca);
+    border: 1px solid rgba(99, 102, 241, 0.55);
+    border-radius: 8px;
+    cursor: pointer;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.16), 0 2px 8px rgba(99, 102, 241, 0.18);
+    transition: transform 0.1s, box-shadow 0.15s;
+    letter-spacing: 0.02em;
+  }
+  .btn-renew:hover:not(:disabled) {
+    transform: translateY(-1px);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18), 0 4px 14px rgba(99, 102, 241, 0.36);
+  }
+  .btn-renew:disabled { opacity: 0.50; cursor: not-allowed; }
+
   .contract-grid {
     display: grid;
     grid-template-columns: repeat(3, 1fr);
@@ -615,4 +816,178 @@
     .pd-sub, .pd-name { justify-content: center; }
     .attr-row { grid-template-columns: minmax(90px, 1.5fr) minmax(50px, 1fr) 32px; }
   }
+
+  /* ===== Modale Rinnovo (Fase 3.G.3) ===== */
+  .modal-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.74);
+    backdrop-filter: blur(6px);
+    display: grid;
+    place-items: center;
+    z-index: 100;
+    padding: 16px;
+  }
+  .modal-renew {
+    width: min(540px, 100%);
+    padding: 22px 26px 18px;
+    max-height: 92vh;
+    overflow-y: auto;
+    animation: modal-in 0.22s ease;
+  }
+  @keyframes modal-in {
+    from { opacity: 0; transform: translateY(12px) scale(0.97); }
+    to { opacity: 1; transform: none; }
+  }
+  .modal-head {
+    display: flex; align-items: flex-start; justify-content: space-between;
+    gap: 14px;
+    border-bottom: 1px solid rgba(252, 211, 77, 0.16);
+    padding-bottom: 14px;
+    margin-bottom: 14px;
+  }
+  .modal-title { margin: 0; color: #fef3c7; font-size: 17px; font-weight: 800; }
+  .modal-sub { color: #b8b0a0; font-size: 12px; margin-top: 3px; }
+  .modal-sub strong { color: #fef3c7; }
+  .modal-close {
+    background: none; border: 0;
+    color: #b8b0a0;
+    font-size: 18px;
+    cursor: pointer;
+    padding: 4px 8px;
+    border-radius: 6px;
+  }
+  .modal-close:hover { background: rgba(252, 211, 77, 0.10); color: #fef3c7; }
+
+  .modal-stats {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 12px;
+    padding: 10px 0 14px;
+    border-bottom: 1px solid rgba(252, 211, 77, 0.10);
+    margin-bottom: 14px;
+  }
+  .modal-stats .stat { display: flex; flex-direction: column; gap: 3px; }
+  .modal-stats .stat-l { color: #918778; font-size: 10px; text-transform: uppercase; letter-spacing: 0.1em; font-weight: 700; }
+  .modal-stats .stat-v { color: #fef3c7; font-weight: 800; font-size: 16px; font-variant-numeric: tabular-nums; }
+
+  .modal-form { margin-bottom: 14px; }
+  .renew-row {
+    display: flex; flex-direction: column; gap: 6px;
+    color: #d4cfc1;
+    font-size: 13px;
+    font-weight: 600;
+    margin-bottom: 12px;
+  }
+  .renew-input {
+    width: 100%;
+    background: rgba(0, 0, 0, 0.5);
+    border: 1px solid rgba(252, 211, 77, 0.3);
+    color: #fef3c7;
+    border-radius: 8px;
+    padding: 11px 14px 11px 32px;
+    font-size: 17px;
+    font-weight: 800;
+    font-family: inherit;
+    font-variant-numeric: tabular-nums;
+    transition: border 0.15s;
+  }
+  .renew-input.small {
+    padding: 10px 14px;
+    font-size: 16px;
+  }
+  .renew-input:focus {
+    outline: none;
+    border-color: rgba(252, 211, 77, 0.6);
+    box-shadow: 0 0 0 3px rgba(252, 211, 77, 0.12);
+  }
+  .counter-input-wrap {
+    position: relative;
+    display: flex;
+    align-items: center;
+  }
+  .counter-prefix {
+    position: absolute;
+    left: 12px;
+    color: #fcd34d;
+    font-weight: 800;
+    font-size: 17px;
+    z-index: 1;
+  }
+  .counter-presets {
+    display: flex;
+    gap: 8px;
+    margin-top: 4px;
+    flex-wrap: wrap;
+  }
+  .preset-btn {
+    background: rgba(252, 211, 77, 0.08);
+    color: #fde68a;
+    border: 1px solid rgba(252, 211, 77, 0.28);
+    padding: 6px 12px;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 700;
+    cursor: pointer;
+    font-family: inherit;
+    transition: all 0.12s;
+  }
+  .preset-btn:hover {
+    background: rgba(252, 211, 77, 0.18);
+    border-color: rgba(252, 211, 77, 0.5);
+  }
+  .form-hint {
+    margin-top: 10px;
+    padding: 10px 12px;
+    background: rgba(99, 102, 241, 0.08);
+    border: 1px solid rgba(99, 102, 241, 0.22);
+    color: #c7d2fe;
+    border-radius: 6px;
+    font-size: 11.5px;
+    line-height: 1.5;
+  }
+  .form-hint strong { color: #e0e7ff; }
+  .negotiate-result {
+    margin-bottom: 14px;
+    padding: 11px 14px;
+    border-radius: 8px;
+    font-size: 13px;
+    line-height: 1.4;
+    font-weight: 600;
+  }
+  .negotiate-result.ok {
+    background: rgba(34, 197, 94, 0.14);
+    color: #86efac;
+    border: 1px solid rgba(34, 197, 94, 0.4);
+  }
+  .negotiate-result.warn {
+    background: rgba(252, 211, 77, 0.12);
+    color: #fde68a;
+    border: 1px solid rgba(252, 211, 77, 0.4);
+  }
+  .negotiate-result.err {
+    background: rgba(220, 38, 38, 0.14);
+    color: #fca5a5;
+    border: 1px solid rgba(220, 38, 38, 0.4);
+  }
+  .modal-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+  .modal-submit { grid-column: 1 / -1; padding: 11px 16px; font-size: 14px; }
+  .modal-reject { padding: 10px 14px; font-size: 13px; }
+  .btn-reject {
+    padding: 8px 14px;
+    font-size: 13px;
+    font-weight: 700;
+    font-family: inherit;
+    color: #fff;
+    background: linear-gradient(135deg, #b91c1c, #ef4444 60%, #b91c1c);
+    border: 1px solid rgba(239, 68, 68, 0.5);
+    border-radius: 8px;
+    cursor: pointer;
+    transition: transform 0.1s;
+  }
+  .btn-reject:hover { transform: translateY(-1px); }
 </style>

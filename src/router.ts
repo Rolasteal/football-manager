@@ -12,6 +12,7 @@ import Settings from '$routes/Settings.svelte'
 import BettingDemo from '$routes/BettingDemo.svelte'
 import Stadium from '$routes/Stadium.svelte'
 import Transfers from '$routes/Transfers.svelte'
+import Youth from '$routes/Youth.svelte'
 import NotFound from '$routes/NotFound.svelte'
 
 export const routes: RouteDefinition = {
@@ -26,6 +27,7 @@ export const routes: RouteDefinition = {
   '/player/:id': PlayerDetail,
   '/stadium':    Stadium,
   '/transfers':  Transfers,
+  '/youth':      Youth,
   '/settings':   Settings,
   '/betting-demo': BettingDemo,
   // Fallback 404

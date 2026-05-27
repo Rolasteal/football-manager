@@ -19,6 +19,11 @@
     type NegotiateOutcome,
     type MyOfferOutcome,
   } from '$engine/career/transfers'
+  import {
+    signFreeAgent,
+    estimateFairWage,
+    type SignFreeAgentOutcome,
+  } from '$engine/career/contracts'
   import { calcOverall } from '$engine/gen/player'
   import { ensureMarketValuesCalibrated } from '$engine/career/aging'
   import type { TransferOffer, CompletedTransfer, NewsItem } from '$engine/career/types'
@@ -79,6 +84,15 @@
   let offerOk = $state(false)
   let offerOutcome = $state<MyOfferOutcome | null>(null)
   let replaceOfferId = $state<string | undefined>(undefined)
+
+  // ====== Stato modale "Firma svincolato" (3.G.3) ======
+  let signTarget = $state<Player | null>(null)
+  let signYears = $state<number>(2)
+  let signWage = $state<number>(0)
+  let signFairWage = $state<number>(0)
+  let signMsg = $state<string | null>(null)
+  let signOk = $state(false)
+  let signOutcome = $state<SignFreeAgentOutcome | null>(null)
 
   // ====== Filtri ricerca giocatori (3.G.2) ======
   type RoleFilter = 'ALL' | 'GK' | 'DEF' | 'MID' | 'ATT'
@@ -260,17 +274,60 @@
     const all = Object.values(career.players)
     const budget = filterBudgetMax > 0 ? filterBudgetMax : (finances?.cash ?? 0)
     const results = all.filter(p => {
-      if (!p.teamId || p.teamId === myId) return false
+      if (p.teamId === myId) return false                       // niente miei
+      // Free agent (p.teamId === null) → ammesso a prescindere dal budget (gratis)
       if (calcOverall(p) < filterOvrMin) return false
       if (playerAge(p) > filterAgeMax) return false
-      if (p.marketValue > budget) return false
+      if (p.teamId && p.marketValue > budget) return false       // budget vincola solo i non svincolati
       if (filterRole !== 'ALL' && POSITION_GROUP[p.position] !== filterRole) return false
       return true
     })
-    // Ordina per OVR desc, limita a 30 per non sovraccaricare UI
-    results.sort((a, b) => calcOverall(b) - calcOverall(a))
+    // Ordina: free agents in cima (più freschi/interessanti), poi per OVR desc
+    results.sort((a, b) => {
+      const aFree = !a.teamId ? 1 : 0
+      const bFree = !b.teamId ? 1 : 0
+      if (aFree !== bFree) return bFree - aFree
+      return calcOverall(b) - calcOverall(a)
+    })
     searchResults = results.slice(0, 30)
     searchActive = true
+  }
+
+  // ====== Firma svincolato (3.G.3) ======
+  function openSignModal(player: Player) {
+    if (!career) return
+    signTarget = player
+    signYears = 2
+    signFairWage = estimateFairWage(career, player)
+    signWage = Math.round(signFairWage / 500) * 500
+    signMsg = null
+    signOutcome = null
+  }
+  function closeSignModal() {
+    signTarget = null
+    signMsg = null
+    signOutcome = null
+  }
+  function setSignWagePct(pct: number) {
+    signWage = Math.round(signFairWage * (1 + pct / 100) / 500) * 500
+  }
+  async function handleSignFreeAgent() {
+    if (!career || !signTarget) return
+    const res = signFreeAgent(career, signTarget.id, signYears, signWage)
+    signOk = res.ok
+    signMsg = res.message ?? res.reason ?? null
+    signOutcome = res.outcome ?? null
+    if (res.ok) {
+      await persistActiveCareer()
+      if (res.outcome === 'accepted') {
+        setTimeout(() => closeSignModal(), 2500)
+      } else if (res.outcome === 'countered' && res.counterWage) {
+        // Pre-imposta counter come default
+        setTimeout(() => {
+          if (res.counterWage) signWage = res.counterWage
+        }, 100)
+      }
+    }
   }
 
   function clearSearch() {
@@ -303,6 +360,7 @@
   if (e.key !== 'Escape') return
   if (negotiatingOffer) closeNegotiate()
   else if (offerPlayerTarget) closeMakeOffer()
+  else if (signTarget) closeSignModal()
 }} />
 
 <AppShell>
@@ -568,11 +626,12 @@
           </div>
         {:else}
           <div class="search-results card-gold">
-            <div class="search-summary">{searchResults.length} risultati (top 30 per OVR)</div>
+            <div class="search-summary">{searchResults.length} risultati (top 30 per OVR) · gli <strong>svincolati</strong> appaiono in cima</div>
             {#each searchResults as p (p.id)}
               {@const team = p.teamId ? career.teams[p.teamId] : null}
               {@const ovr = calcOverall(p)}
-              <div class="search-row">
+              {@const isFree = !p.teamId}
+              <div class="search-row" class:row-free={isFree}>
                 <button class="search-player" onclick={() => openPlayer(p.id)} title="Vedi scheda giocatore">
                   <span class="hpos">{p.position}</span>
                   <span class="search-name">{p.firstName} <strong>{p.lastName}</strong></span>
@@ -582,6 +641,8 @@
                   {#if team}
                     <span class="crest small" style="--c1: {team.primaryColor}; --c2: {team.secondaryColor};">{team.shortName}</span>
                     <span class="search-team-name">{team.name}</span>
+                  {:else}
+                    <span class="free-badge">🆓 Svincolato</span>
                   {/if}
                 </div>
                 <div class="search-stat">
@@ -589,17 +650,27 @@
                   <span class="stat-v text-gold">{ovr}</span>
                 </div>
                 <div class="search-stat">
-                  <span class="stat-l">Valore</span>
-                  <span class="stat-v">{fmtMoney(p.marketValue)}</span>
+                  <span class="stat-l">{isFree ? 'Ingaggio stima' : 'Valore'}</span>
+                  <span class="stat-v">{isFree ? fmtMoney(estimateFairWage(career, p)) + '/s' : fmtMoney(p.marketValue)}</span>
                 </div>
-                <button
-                  class="btn-trattativa search-offer-btn"
-                  onclick={() => openMakeOffer(p)}
-                  disabled={window === 'closed'}
-                  title={window === 'closed' ? 'Mercato chiuso' : 'Fai un\'offerta'}
-                >
-                  💰 Fai offerta
-                </button>
+                {#if isFree}
+                  <button
+                    class="btn-gold search-offer-btn"
+                    onclick={() => openSignModal(p)}
+                    title="Firma il giocatore a parametro zero"
+                  >
+                    ✍ Firma
+                  </button>
+                {:else}
+                  <button
+                    class="btn-trattativa search-offer-btn"
+                    onclick={() => openMakeOffer(p)}
+                    disabled={window === 'closed'}
+                    title={window === 'closed' ? 'Mercato chiuso' : 'Fai un\'offerta'}
+                  >
+                    💰 Fai offerta
+                  </button>
+                {/if}
               </div>
             {/each}
           </div>
@@ -754,6 +825,98 @@
           </div>
         </div>
       {/if}
+    {/if}
+
+    <!-- ====== Modale Firma svincolato (3.G.3) ====== -->
+    {#if signTarget}
+      {@const p = signTarget}
+      <div
+        class="modal-backdrop"
+        onclick={closeSignModal}
+        onkeydown={(e) => { if (e.key === 'Escape') closeSignModal() }}
+        role="presentation"
+        tabindex="-1"
+      >
+        <div
+          class="modal-trattativa card-gold"
+          onclick={(e) => e.stopPropagation()}
+          onkeydown={(e) => e.stopPropagation()}
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="modal-sign-title"
+          tabindex="-1"
+        >
+          <header class="modal-head">
+            <div class="modal-h-l">
+              <div class="free-icon">🆓</div>
+              <div>
+                <h3 class="modal-title" id="modal-sign-title">Firma svincolato</h3>
+                <div class="modal-sub">
+                  <strong>{p.firstName} {p.lastName}</strong> · {p.position} · OVR {calcOverall(p)} · {playerAge(p)} anni · Parametro zero
+                </div>
+              </div>
+            </div>
+            <button class="modal-close" onclick={closeSignModal} aria-label="Chiudi">✗</button>
+          </header>
+
+          <div class="modal-stats">
+            <div class="stat">
+              <span class="stat-l">Ingaggio equo (riferimento)</span>
+              <span class="stat-v text-gold">{fmtMoney(signFairWage)}/sett</span>
+            </div>
+            <div class="stat">
+              <span class="stat-l">Valore mercato</span>
+              <span class="stat-v">{fmtMoney(p.marketValue)}</span>
+            </div>
+            <div class="stat">
+              <span class="stat-l">Costo trasferimento</span>
+              <span class="stat-v">€0 (gratis)</span>
+            </div>
+          </div>
+
+          <div class="modal-form">
+            <label class="counter-label">
+              <span>Durata contratto (anni)</span>
+              <input type="number" class="counter-input years-input" bind:value={signYears} min="1" max="5" />
+            </label>
+            <label class="counter-label" style="margin-top: 12px;">
+              <span>Stipendio settimanale offerto</span>
+              <div class="counter-input-wrap">
+                <span class="counter-prefix">€</span>
+                <input type="number" class="counter-input" bind:value={signWage} min="500" step="500" />
+              </div>
+            </label>
+            <div class="counter-presets">
+              <button class="preset-btn" onclick={() => setSignWagePct(-15)}>-15%</button>
+              <button class="preset-btn" onclick={() => setSignWagePct(-5)}>-5%</button>
+              <button class="preset-btn" onclick={() => setSignWagePct(0)}>Equo</button>
+              <button class="preset-btn" onclick={() => setSignWagePct(15)}>+15%</button>
+            </div>
+            <div class="form-hint">
+              <strong>Tip:</strong> gli svincolati sono più flessibili dei rinnovi: accettano fino al -15% del fair wage.
+              Sotto il -30% rifiutano. Nessun costo di trasferimento, solo stipendio.
+            </div>
+          </div>
+
+          {#if signMsg}
+            <div class="negotiate-result"
+              class:ok={signOk && signOutcome === 'accepted'}
+              class:warn={signOk && signOutcome === 'countered'}
+              class:err={!signOk || signOutcome === 'rejected'}>
+              {signMsg}
+            </div>
+          {/if}
+
+          <div class="modal-actions">
+            <button class="btn-gold modal-submit" onclick={handleSignFreeAgent} disabled={signYears < 1 || signYears > 5 || signWage <= 0}>
+              ✍ Proponi firma
+            </button>
+            <button class="btn-reject modal-reject" onclick={closeSignModal}>
+              Chiudi
+            </button>
+          </div>
+        </div>
+      </div>
     {/if}
 
     <!-- ====== Modale Fai offerta (3.G.2) ====== -->
@@ -1018,6 +1181,32 @@
     max-width: 180px;
   }
   .crest.small { width: 28px; height: 28px; font-size: 10px; }
+
+  /* ===== Free agent (3.G.3) ===== */
+  .row-free {
+    background: linear-gradient(90deg, rgba(34, 197, 94, 0.06), transparent 60%);
+    border-left: 3px solid rgba(34, 197, 94, 0.6);
+    padding-left: 11px;
+  }
+  .free-badge {
+    background: rgba(34, 197, 94, 0.16);
+    color: #86efac;
+    border: 1px solid rgba(34, 197, 94, 0.4);
+    padding: 4px 10px;
+    border-radius: 6px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+  }
+  .free-icon {
+    font-size: 32px;
+    width: 44px; height: 44px;
+    display: grid; place-items: center;
+    background: rgba(34, 197, 94, 0.14);
+    border: 1px solid rgba(34, 197, 94, 0.45);
+    border-radius: 8px;
+  }
+  .years-input { padding-left: 14px !important; max-width: 100px; }
   .search-stat { display: flex; flex-direction: column; gap: 2px; align-items: flex-start; }
   .search-stat .stat-l { color: #918778; font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.08em; font-weight: 700; }
   .search-stat .stat-v { color: #fef3c7; font-weight: 800; font-size: 14px; font-variant-numeric: tabular-nums; }

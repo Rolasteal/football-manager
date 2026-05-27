@@ -16,7 +16,12 @@ import { createRng, generateId } from '$engine/gen/rng'
 import { endOfSeasonAgeTick } from './aging'
 import { generateYouthPoolForSeason, type YouthIntakeReport } from './youth'
 import { buildAllSchedules } from '$engine/gen/schedule'
-import { refreshMyClubWageBudget, applyContractEndOfSeason } from './contracts'
+import {
+  refreshMyClubWageBudget,
+  applyContractEndOfSeason,
+  cleanMyLineupAfterReleases,
+  type ContractEndOfSeasonReport,
+} from './contracts'
 import { applyEndOfSeasonFinances, type EndOfSeasonPrizesReport } from './prizes'
 import { fmtMoney } from './finances'
 
@@ -28,6 +33,8 @@ export interface NewSeasonReport {
   fixturesGenerated: number
   /** Premi piazzamento + UEFA + sponsor rinegoziazione (Fase 3.F). null se non applicabile. */
   prizes: EndOfSeasonPrizesReport | null
+  /** Contratti scaduti: AI auto-rinnovi + svincoli (Fase 3.G.3). */
+  contracts: ContractEndOfSeasonReport
 }
 
 /**
@@ -68,8 +75,11 @@ export function startNewSeason(career: Career): NewSeasonReport | null {
   const playersAged = endOfSeasonAgeTick(career)
   const newYear = career.season.year  // ora è previousYear + 1
 
-  // 2) Contratti scadenze (Fase 3.D: no-op; Fase 3.G implementerà rinnovi/svincoli)
-  applyContractEndOfSeason(career)
+  // 2) Contratti: scadenze + AI auto-rinnovi + svincoli (Fase 3.G.3).
+  //    Eseguito DOPO aging (così endYear si confronta col newYear già avanzato).
+  const contracts = applyContractEndOfSeason(career)
+  // Pulisci lineup mio club dai miei svincolati (per non avere fantasmi in formazione)
+  cleanMyLineupAfterReleases(career, contracts.myReleased.map(r => r.playerId))
 
   // 3) Pool giovani — rng deterministic separato. I giovani vengono creati con
   //    contratto fresco 4-5 anni (dentro generateYouthPlayer).
@@ -176,6 +186,31 @@ export function startNewSeason(career: Career): NewSeasonReport | null {
     }
   }
 
+  // Fase 3.G.3: news sui contratti del mio club
+  // 1) Svincoli miei (1 news per ognuno, ordinati per overall desc)
+  const sortedMyReleased = [...contracts.myReleased].sort((a, b) => b.overall - a.overall)
+  for (const rel of sortedMyReleased) {
+    career.news.unshift({
+      id: generateId(rngNews),
+      date: seasonEndDate,
+      kind: 'transfer',
+      title: `Svincolato a parametro zero: ${rel.playerName}`,
+      body: `${rel.playerName} (${rel.position}, OVR ${rel.overall}) lascia il club a parametro zero: il contratto non è stato rinnovato in tempo.`,
+      read: false,
+    })
+  }
+  // 2) Riepilogo movimenti contratti (1 news condensata) se ci sono numeri rilevanti
+  if (contracts.aiRenewed.length + contracts.released.length > 0) {
+    career.news.unshift({
+      id: generateId(rngNews),
+      date: seasonEndDate,
+      kind: 'transfer',
+      title: `Mercato svincolati: ${contracts.released.length} a zero, ${contracts.aiRenewed.length} rinnovi`,
+      body: `Si è chiusa la sessione rinnovi: ${contracts.released.length} giocatori liberi sul mercato, ${contracts.aiRenewed.length} estensioni firmate nei club di Serie A e B.`,
+      read: false,
+    })
+  }
+
   // Trim news (cap 50, come al solito)
   if (career.news.length > 50) career.news.length = 50
 
@@ -188,5 +223,6 @@ export function startNewSeason(career: Career): NewSeasonReport | null {
     youth,
     fixturesGenerated,
     prizes,
+    contracts,
   }
 }
